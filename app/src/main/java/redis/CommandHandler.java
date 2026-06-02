@@ -4,18 +4,14 @@ import java.util.List;
 
 public class CommandHandler {
 
-    // The store — one instance shared across all clients
     private final Store store;
 
     public CommandHandler(Store store) {
         this.store = store;
     }
 
-    // Takes a parsed command like ["SET", "name", "Atharva"]
-    // Returns the correct RESP bytes to send back to the client
     public byte[] handle(List<String> command) {
 
-        // First element is always the command name
         String name = command.get(0).toUpperCase();
 
         try {
@@ -38,16 +34,38 @@ public class CommandHandler {
                 }
 
                 case "SET": {
-                    // SET needs at least key and value
                     if (command.size() < 3) {
                         return RespSerializer.error(
                             "wrong number of arguments for 'set'"
                         );
                     }
-                    String result = store.set(
-                        command.get(1),
-                        command.get(2)
-                    );
+
+                    String key = command.get(1);
+                    String value = command.get(2);
+                    long expiryMs = -1;
+
+                    // Check for optional EX or PX arguments
+                    // SET key value EX 30
+                    // SET key value PX 5000
+                    if (command.size() >= 5) {
+                        String option = command.get(3).toUpperCase();
+                        long amount = Long.parseLong(command.get(4));
+
+                        if (option.equals("EX")) {
+                            // EX = seconds → convert to milliseconds
+                            expiryMs = amount * 1000;
+                        } else if (option.equals("PX")) {
+                            // PX = already milliseconds
+                            expiryMs = amount;
+                        } else {
+                            return RespSerializer.error(
+                                "invalid option for 'set': "
+                                + command.get(3)
+                            );
+                        }
+                    }
+
+                    String result = store.set(key, value, expiryMs);
                     return RespSerializer.simpleString(result);
                 }
 
@@ -57,8 +75,6 @@ public class CommandHandler {
                             "wrong number of arguments for 'get'"
                         );
                     }
-                    // get() returns null if key missing
-                    // bulkString handles null → $-1\r\n
                     String value = store.get(command.get(1));
                     return RespSerializer.bulkString(value);
                 }
@@ -69,9 +85,6 @@ public class CommandHandler {
                             "wrong number of arguments for 'del'"
                         );
                     }
-                    // DEL can take multiple keys
-                    // command is ["DEL", "key1", "key2", ...]
-                    // subList(1, size) gives ["key1", "key2", ...]
                     int deleted = store.del(
                         command.subList(1, command.size())
                     );
@@ -86,6 +99,47 @@ public class CommandHandler {
                     }
                     int exists = store.exists(command.get(1));
                     return RespSerializer.integer(exists);
+                }
+
+                case "EXPIRE": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'expire'"
+                        );
+                    }
+                    long seconds = Long.parseLong(command.get(2));
+                    int result = store.expire(command.get(1), seconds);
+                    return RespSerializer.integer(result);
+                }
+
+                case "TTL": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'ttl'"
+                        );
+                    }
+                    long ttl = store.ttl(command.get(1));
+                    return RespSerializer.integer(ttl);
+                }
+
+                case "PTTL": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'pttl'"
+                        );
+                    }
+                    long pttl = store.pttl(command.get(1));
+                    return RespSerializer.integer(pttl);
+                }
+
+                case "PERSIST": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'persist'"
+                        );
+                    }
+                    int result = store.persist(command.get(1));
+                    return RespSerializer.integer(result);
                 }
 
                 case "INCR": {
@@ -109,7 +163,6 @@ public class CommandHandler {
                 }
 
                 case "MSET": {
-                    // MSET needs even number of args after command name
                     if (command.size() < 3
                             || command.size() % 2 == 0) {
                         return RespSerializer.error(
@@ -131,7 +184,6 @@ public class CommandHandler {
                     List<String> values = store.mget(
                         command.subList(1, command.size())
                     );
-                    // MGET returns an array response
                     return serializeArray(values);
                 }
 
@@ -170,14 +222,10 @@ public class CommandHandler {
             }
 
         } catch (RuntimeException e) {
-            // Catches INCR/DECR on non-numeric values etc
             return RespSerializer.error(e.getMessage());
         }
     }
 
-    // Helper — serialize a List of Strings as a RESP array
-    // Used for MGET and KEYS responses
-    // Format: *3\r\n$3\r\nfoo\r\n$3\r\nbar\r\n$3\r\nbaz\r\n
     private byte[] serializeArray(List<String> items) {
         StringBuilder sb = new StringBuilder();
         sb.append("*").append(items.size()).append("\r\n");
