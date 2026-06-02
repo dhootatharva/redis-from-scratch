@@ -39,23 +39,15 @@ public class CommandHandler {
                             "wrong number of arguments for 'set'"
                         );
                     }
-
                     String key = command.get(1);
                     String value = command.get(2);
                     long expiryMs = -1;
-
-                    // Check for optional EX or PX arguments
-                    // SET key value EX 30
-                    // SET key value PX 5000
                     if (command.size() >= 5) {
                         String option = command.get(3).toUpperCase();
                         long amount = Long.parseLong(command.get(4));
-
                         if (option.equals("EX")) {
-                            // EX = seconds → convert to milliseconds
                             expiryMs = amount * 1000;
                         } else if (option.equals("PX")) {
-                            // PX = already milliseconds
                             expiryMs = amount;
                         } else {
                             return RespSerializer.error(
@@ -64,7 +56,6 @@ public class CommandHandler {
                             );
                         }
                     }
-
                     String result = store.set(key, value, expiryMs);
                     return RespSerializer.simpleString(result);
                 }
@@ -212,6 +203,89 @@ public class CommandHandler {
                         command.get(2)
                     );
                     return RespSerializer.integer(length);
+                }
+
+                case "LPUSH": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'lpush'"
+                        );
+                    }
+                    long length = store.lpush(
+                        command.get(1),
+                        command.subList(2, command.size())
+                    );
+                    return RespSerializer.integer(length);
+                }
+
+                case "RPUSH": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'rpush'"
+                        );
+                    }
+                    long length = store.rpush(
+                        command.get(1),
+                        command.subList(2, command.size())
+                    );
+                    return RespSerializer.integer(length);
+                }
+
+                case "LPOP": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'lpop'"
+                        );
+                    }
+                    String value = store.lpop(command.get(1));
+                    return RespSerializer.bulkString(value);
+                }
+
+                case "RPOP": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'rpop'"
+                        );
+                    }
+                    String value = store.rpop(command.get(1));
+                    return RespSerializer.bulkString(value);
+                }
+
+                case "LLEN": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'llen'"
+                        );
+                    }
+                    long length = store.llen(command.get(1));
+                    return RespSerializer.integer(length);
+                }
+
+                case "LRANGE": {
+                    if (command.size() < 4) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'lrange'"
+                        );
+                    }
+                    int start = Integer.parseInt(command.get(2));
+                    int stop = Integer.parseInt(command.get(3));
+                    List<String> items = store.lrange(
+                        command.get(1), start, stop
+                    );
+                    return serializeArray(items);
+                }
+
+                case "LINDEX": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'lindex'"
+                        );
+                    }
+                    int index = Integer.parseInt(command.get(2));
+                    String value = store.lindex(
+                        command.get(1), index
+                    );
+                    return RespSerializer.bulkString(value);
                 }
 
                 default: {
