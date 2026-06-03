@@ -283,6 +283,29 @@ public class CommandHandler {
                     return RespSerializer.simpleString("OK");
                 }
 
+                case "TYPE": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'type'"
+                        );
+                    }
+                    String type = store.type(command.get(1));
+                    return RespSerializer.simpleString(type);
+                }
+
+                case "RENAME": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'rename'"
+                        );
+                    }
+                    String result = store.rename(
+                        command.get(1),
+                        command.get(2)
+                    );
+                    return RespSerializer.simpleString(result);
+                }
+
                 case "LPUSH": {
                     if (command.size() < 3) {
                         return RespSerializer.error(

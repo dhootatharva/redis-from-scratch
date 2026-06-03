@@ -21,10 +21,6 @@ public class Store {
         startActiveExpiry();
     }
 
-    // ─────────────────────────────────────────
-    // Type checking helpers
-    // ─────────────────────────────────────────
-
     private boolean isString(String key) {
         return data.containsKey(key);
     }
@@ -51,10 +47,6 @@ public class Store {
         }
     }
 
-    // ─────────────────────────────────────────
-    // Expiry helpers
-    // ─────────────────────────────────────────
-
     private boolean isExpired(String key) {
         Long expiryTime = expiry.get(key);
         if (expiryTime == null) return false;
@@ -66,10 +58,6 @@ public class Store {
         lists.remove(key);
         expiry.remove(key);
     }
-
-    // ─────────────────────────────────────────
-    // SET key value [EX ms] [expiryMs]
-    // ─────────────────────────────────────────
 
     public String set(String key, String value, long expiryMs) {
         lists.remove(key);
@@ -87,19 +75,11 @@ public class Store {
         return set(key, value, -1);
     }
 
-    // ─────────────────────────────────────────
-    // GET key
-    // ─────────────────────────────────────────
-
     public String get(String key) {
         if (isExpired(key)) { deleteKey(key); return null; }
         assertString(key);
         return data.get(key);
     }
-
-    // ─────────────────────────────────────────
-    // DEL key [key ...]
-    // ─────────────────────────────────────────
 
     public int del(List<String> keys) {
         int deleted = 0;
@@ -114,19 +94,11 @@ public class Store {
         return deleted;
     }
 
-    // ─────────────────────────────────────────
-    // EXISTS key
-    // ─────────────────────────────────────────
-
     public int exists(String key) {
         if (isExpired(key)) { deleteKey(key); return 0; }
         return (data.containsKey(key)
             || lists.containsKey(key)) ? 1 : 0;
     }
-
-    // ─────────────────────────────────────────
-    // EXPIRE key seconds
-    // ─────────────────────────────────────────
 
     public int expire(String key, long seconds) {
         boolean keyExists = data.containsKey(key)
@@ -136,10 +108,6 @@ public class Store {
             System.currentTimeMillis() + (seconds * 1000));
         return 1;
     }
-
-    // ─────────────────────────────────────────
-    // TTL key
-    // ─────────────────────────────────────────
 
     public long ttl(String key) {
         boolean keyExists = data.containsKey(key)
@@ -152,10 +120,6 @@ public class Store {
             (expiryTime - System.currentTimeMillis()) / 1000);
     }
 
-    // ─────────────────────────────────────────
-    // PTTL key
-    // ─────────────────────────────────────────
-
     public long pttl(String key) {
         boolean keyExists = data.containsKey(key)
             || lists.containsKey(key);
@@ -167,20 +131,12 @@ public class Store {
             expiryTime - System.currentTimeMillis());
     }
 
-    // ─────────────────────────────────────────
-    // PERSIST key
-    // ─────────────────────────────────────────
-
     public int persist(String key) {
         if (!data.containsKey(key)
                 && !lists.containsKey(key)) return 0;
         Long removed = expiry.remove(key);
         return removed != null ? 1 : 0;
     }
-
-    // ─────────────────────────────────────────
-    // INCR key
-    // ─────────────────────────────────────────
 
     public long incr(String key) {
         if (isExpired(key)) deleteKey(key);
@@ -198,10 +154,6 @@ public class Store {
         return value;
     }
 
-    // ─────────────────────────────────────────
-    // DECR key
-    // ─────────────────────────────────────────
-
     public long decr(String key) {
         if (isExpired(key)) deleteKey(key);
         assertString(key);
@@ -218,10 +170,6 @@ public class Store {
         return value;
     }
 
-    // ─────────────────────────────────────────
-    // MSET key value [key value ...]
-    // ─────────────────────────────────────────
-
     public String mset(List<String> args) {
         for (int i = 0; i < args.size(); i += 2) {
             String key = args.get(i);
@@ -231,10 +179,6 @@ public class Store {
         }
         return "OK";
     }
-
-    // ─────────────────────────────────────────
-    // MGET key [key ...]
-    // ─────────────────────────────────────────
 
     public List<String> mget(List<String> keys) {
         List<String> results = new ArrayList<>();
@@ -251,10 +195,6 @@ public class Store {
         return results;
     }
 
-    // ─────────────────────────────────────────
-    // KEYS *
-    // ─────────────────────────────────────────
-
     public List<String> keys() {
         List<String> result = new ArrayList<>();
         for (String key : data.keySet()) {
@@ -266,17 +206,9 @@ public class Store {
         return result;
     }
 
-    // ─────────────────────────────────────────
-    // DBSIZE
-    // ─────────────────────────────────────────
-
     public int dbsize() {
         return keys().size();
     }
-
-    // ─────────────────────────────────────────
-    // FLUSHALL
-    // ─────────────────────────────────────────
 
     public String flushall() {
         data.clear();
@@ -284,10 +216,6 @@ public class Store {
         expiry.clear();
         return "OK";
     }
-
-    // ─────────────────────────────────────────
-    // APPEND key value
-    // ─────────────────────────────────────────
 
     public int append(String key, String value) {
         if (isExpired(key)) deleteKey(key);
@@ -298,20 +226,12 @@ public class Store {
         return newValue.length();
     }
 
-    // ─────────────────────────────────────────
-    // STRLEN key
-    // ─────────────────────────────────────────
-
     public int strlen(String key) {
         if (isExpired(key)) { deleteKey(key); return 0; }
         assertString(key);
         String value = data.get(key);
         return value == null ? 0 : value.length();
     }
-
-    // ─────────────────────────────────────────
-    // INCRBY key amount
-    // ─────────────────────────────────────────
 
     public long incrby(String key, long amount) {
         if (isExpired(key)) deleteKey(key);
@@ -329,17 +249,9 @@ public class Store {
         return value;
     }
 
-    // ─────────────────────────────────────────
-    // DECRBY key amount
-    // ─────────────────────────────────────────
-
     public long decrby(String key, long amount) {
         return incrby(key, -amount);
     }
-
-    // ─────────────────────────────────────────
-    // GETDEL key
-    // ─────────────────────────────────────────
 
     public String getdel(String key) {
         if (isExpired(key)) { deleteKey(key); return null; }
@@ -349,14 +261,73 @@ public class Store {
         return value;
     }
 
-    // ─────────────────────────────────────────
-    // SETNX key value
-    // ─────────────────────────────────────────
-
     public int setnx(String key, String value) {
         if (isExpired(key)) deleteKey(key);
         String existing = data.putIfAbsent(key, value);
         return existing == null ? 1 : 0;
+    }
+
+    // ─────────────────────────────────────────
+    // TYPE key
+    // Returns the type of value stored at key
+    // "string", "list", or "none"
+    // ─────────────────────────────────────────
+    public String type(String key) {
+        if (isExpired(key)) { deleteKey(key); return "none"; }
+        if (data.containsKey(key)) return "string";
+        if (lists.containsKey(key)) return "list";
+        return "none";
+    }
+
+    // ─────────────────────────────────────────
+    // RENAME key newkey
+    // Renames key to newkey
+    // Throws if key does not exist
+    // If newkey already exists it is overwritten
+    // ─────────────────────────────────────────
+    public String rename(String key, String newKey) {
+        // Cannot rename a key that does not exist
+        if (isExpired(key)) { deleteKey(key); }
+        boolean keyExists = data.containsKey(key)
+            || lists.containsKey(key);
+        if (!keyExists) {
+            throw new RuntimeException("no such key");
+        }
+
+        // Handle string type
+        if (data.containsKey(key)) {
+            String value = data.get(key);
+            // Delete the new key first if it exists
+            deleteKey(newKey);
+            // Copy value to new key
+            data.put(newKey, value);
+            // Copy expiry if it exists
+            Long expiryTime = expiry.get(key);
+            if (expiryTime != null) {
+                expiry.put(newKey, expiryTime);
+            }
+            // Delete old key
+            deleteKey(key);
+        }
+
+        // Handle list type
+        if (lists.containsKey(key)) {
+            CopyOnWriteArrayList<String> list = lists.get(key);
+            // Delete the new key first if it exists
+            deleteKey(newKey);
+            // Copy list to new key
+            lists.put(newKey,
+                new CopyOnWriteArrayList<>(list));
+            // Copy expiry if it exists
+            Long expiryTime = expiry.get(key);
+            if (expiryTime != null) {
+                expiry.put(newKey, expiryTime);
+            }
+            // Delete old key
+            deleteKey(key);
+        }
+
+        return "OK";
     }
 
     // ─────────────────────────────────────────
@@ -440,10 +411,6 @@ public class Store {
         if (index < 0 || index >= size) return null;
         return list.get(index);
     }
-
-    // ─────────────────────────────────────────
-    // Active expiry background thread
-    // ─────────────────────────────────────────
 
     private void startActiveExpiry() {
         Thread cleanupThread = new Thread(() -> {
