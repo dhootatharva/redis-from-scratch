@@ -3,23 +3,37 @@ package redis;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 public class Store {
 
+    // String storage
     private final ConcurrentHashMap<String, String> data
         = new ConcurrentHashMap<>();
 
+    // List storage
     private final ConcurrentHashMap<String, CopyOnWriteArrayList<String>>
         lists = new ConcurrentHashMap<>();
 
+    // Hash storage — key → (field → value)
+    // A hash is a map inside a map
+    private final ConcurrentHashMap<String,
+        ConcurrentHashMap<String, String>> hashes
+        = new ConcurrentHashMap<>();
+
+    // Expiry storage
     private final ConcurrentHashMap<String, Long> expiry
         = new ConcurrentHashMap<>();
 
     public Store() {
         startActiveExpiry();
     }
+
+    // ─────────────────────────────────────────
+    // Type checking helpers
+    // ─────────────────────────────────────────
 
     private boolean isString(String key) {
         return data.containsKey(key);
@@ -29,8 +43,12 @@ public class Store {
         return lists.containsKey(key);
     }
 
+    private boolean isHash(String key) {
+        return hashes.containsKey(key);
+    }
+
     private void assertList(String key) {
-        if (isString(key)) {
+        if (isString(key) || isHash(key)) {
             throw new RuntimeException(
                 "WRONGTYPE Operation against a key holding " +
                 "the wrong kind of value"
@@ -39,13 +57,26 @@ public class Store {
     }
 
     private void assertString(String key) {
-        if (isList(key)) {
+        if (isList(key) || isHash(key)) {
             throw new RuntimeException(
                 "WRONGTYPE Operation against a key holding " +
                 "the wrong kind of value"
             );
         }
     }
+
+    private void assertHash(String key) {
+        if (isString(key) || isList(key)) {
+            throw new RuntimeException(
+                "WRONGTYPE Operation against a key holding " +
+                "the wrong kind of value"
+            );
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // Expiry helpers
+    // ─────────────────────────────────────────
 
     private boolean isExpired(String key) {
         Long expiryTime = expiry.get(key);
@@ -56,11 +87,17 @@ public class Store {
     private void deleteKey(String key) {
         data.remove(key);
         lists.remove(key);
+        hashes.remove(key);
         expiry.remove(key);
     }
 
+    // ─────────────────────────────────────────
+    // STRING COMMANDS
+    // ─────────────────────────────────────────
+
     public String set(String key, String value, long expiryMs) {
         lists.remove(key);
+        hashes.remove(key);
         data.put(key, value);
         if (expiryMs > 0) {
             expiry.put(key,
@@ -85,7 +122,8 @@ public class Store {
         int deleted = 0;
         for (String key : keys) {
             boolean existed = data.containsKey(key)
-                || lists.containsKey(key);
+                || lists.containsKey(key)
+                || hashes.containsKey(key);
             if (existed) {
                 deleteKey(key);
                 deleted++;
@@ -97,12 +135,14 @@ public class Store {
     public int exists(String key) {
         if (isExpired(key)) { deleteKey(key); return 0; }
         return (data.containsKey(key)
-            || lists.containsKey(key)) ? 1 : 0;
+            || lists.containsKey(key)
+            || hashes.containsKey(key)) ? 1 : 0;
     }
 
     public int expire(String key, long seconds) {
         boolean keyExists = data.containsKey(key)
-            || lists.containsKey(key);
+            || lists.containsKey(key)
+            || hashes.containsKey(key);
         if (!keyExists || isExpired(key)) return 0;
         expiry.put(key,
             System.currentTimeMillis() + (seconds * 1000));
@@ -111,7 +151,8 @@ public class Store {
 
     public long ttl(String key) {
         boolean keyExists = data.containsKey(key)
-            || lists.containsKey(key);
+            || lists.containsKey(key)
+            || hashes.containsKey(key);
         if (!keyExists) return -2;
         if (isExpired(key)) { deleteKey(key); return -2; }
         Long expiryTime = expiry.get(key);
@@ -122,7 +163,8 @@ public class Store {
 
     public long pttl(String key) {
         boolean keyExists = data.containsKey(key)
-            || lists.containsKey(key);
+            || lists.containsKey(key)
+            || hashes.containsKey(key);
         if (!keyExists) return -2;
         if (isExpired(key)) { deleteKey(key); return -2; }
         Long expiryTime = expiry.get(key);
@@ -133,7 +175,8 @@ public class Store {
 
     public int persist(String key) {
         if (!data.containsKey(key)
-                && !lists.containsKey(key)) return 0;
+                && !lists.containsKey(key)
+                && !hashes.containsKey(key)) return 0;
         Long removed = expiry.remove(key);
         return removed != null ? 1 : 0;
     }
@@ -174,6 +217,7 @@ public class Store {
         for (int i = 0; i < args.size(); i += 2) {
             String key = args.get(i);
             lists.remove(key);
+            hashes.remove(key);
             data.put(key, args.get(i + 1));
             expiry.remove(key);
         }
@@ -186,7 +230,7 @@ public class Store {
             if (isExpired(key)) {
                 deleteKey(key);
                 results.add(null);
-            } else if (isList(key)) {
+            } else if (isList(key) || isHash(key)) {
                 results.add(null);
             } else {
                 results.add(data.get(key));
@@ -203,6 +247,9 @@ public class Store {
         for (String key : lists.keySet()) {
             if (!isExpired(key)) result.add(key);
         }
+        for (String key : hashes.keySet()) {
+            if (!isExpired(key)) result.add(key);
+        }
         return result;
     }
 
@@ -213,6 +260,7 @@ public class Store {
     public String flushall() {
         data.clear();
         lists.clear();
+        hashes.clear();
         expiry.clear();
         return "OK";
     }
@@ -267,66 +315,53 @@ public class Store {
         return existing == null ? 1 : 0;
     }
 
-    // ─────────────────────────────────────────
-    // TYPE key
-    // Returns the type of value stored at key
-    // "string", "list", or "none"
-    // ─────────────────────────────────────────
     public String type(String key) {
         if (isExpired(key)) { deleteKey(key); return "none"; }
         if (data.containsKey(key)) return "string";
         if (lists.containsKey(key)) return "list";
+        if (hashes.containsKey(key)) return "hash";
         return "none";
     }
 
-    // ─────────────────────────────────────────
-    // RENAME key newkey
-    // Renames key to newkey
-    // Throws if key does not exist
-    // If newkey already exists it is overwritten
-    // ─────────────────────────────────────────
     public String rename(String key, String newKey) {
-        // Cannot rename a key that does not exist
-        if (isExpired(key)) { deleteKey(key); }
+        if (isExpired(key)) deleteKey(key);
         boolean keyExists = data.containsKey(key)
-            || lists.containsKey(key);
+            || lists.containsKey(key)
+            || hashes.containsKey(key);
         if (!keyExists) {
             throw new RuntimeException("no such key");
         }
-
-        // Handle string type
         if (data.containsKey(key)) {
             String value = data.get(key);
-            // Delete the new key first if it exists
             deleteKey(newKey);
-            // Copy value to new key
             data.put(newKey, value);
-            // Copy expiry if it exists
             Long expiryTime = expiry.get(key);
             if (expiryTime != null) {
                 expiry.put(newKey, expiryTime);
             }
-            // Delete old key
             deleteKey(key);
-        }
-
-        // Handle list type
-        if (lists.containsKey(key)) {
+        } else if (lists.containsKey(key)) {
             CopyOnWriteArrayList<String> list = lists.get(key);
-            // Delete the new key first if it exists
             deleteKey(newKey);
-            // Copy list to new key
             lists.put(newKey,
                 new CopyOnWriteArrayList<>(list));
-            // Copy expiry if it exists
             Long expiryTime = expiry.get(key);
             if (expiryTime != null) {
                 expiry.put(newKey, expiryTime);
             }
-            // Delete old key
+            deleteKey(key);
+        } else if (hashes.containsKey(key)) {
+            ConcurrentHashMap<String, String> hash =
+                hashes.get(key);
+            deleteKey(newKey);
+            hashes.put(newKey,
+                new ConcurrentHashMap<>(hash));
+            Long expiryTime = expiry.get(key);
+            if (expiryTime != null) {
+                expiry.put(newKey, expiryTime);
+            }
             deleteKey(key);
         }
-
         return "OK";
     }
 
@@ -411,6 +446,156 @@ public class Store {
         if (index < 0 || index >= size) return null;
         return list.get(index);
     }
+
+    // ─────────────────────────────────────────
+    // HASH COMMANDS
+    // ─────────────────────────────────────────
+
+    // ─────────────────────────────────────────
+    // HSET key field value [field value ...]
+    // Sets one or more fields in a hash
+    // Creates the hash if it does not exist
+    // Returns number of NEW fields added
+    // (updating existing fields does not count)
+    // ─────────────────────────────────────────
+    public int hset(String key, List<String> fieldValues) {
+        if (isExpired(key)) deleteKey(key);
+        assertHash(key);
+
+        // Get existing hash or create new one
+        ConcurrentHashMap<String, String> hash =
+            hashes.computeIfAbsent(key,
+                k -> new ConcurrentHashMap<>());
+
+        int added = 0;
+        // fieldValues comes in pairs: [field1, val1, field2, val2]
+        for (int i = 0; i < fieldValues.size(); i += 2) {
+            String field = fieldValues.get(i);
+            String value = fieldValues.get(i + 1);
+            // put() returns null if field is new
+            if (hash.put(field, value) == null) {
+                added++;
+            }
+        }
+        return added;
+    }
+
+    // ─────────────────────────────────────────
+    // HGET key field
+    // Returns value of one field
+    // Returns null if key or field does not exist
+    // ─────────────────────────────────────────
+    public String hget(String key, String field) {
+        if (isExpired(key)) { deleteKey(key); return null; }
+        assertHash(key);
+        ConcurrentHashMap<String, String> hash = hashes.get(key);
+        if (hash == null) return null;
+        return hash.get(field);
+    }
+
+    // ─────────────────────────────────────────
+    // HGETALL key
+    // Returns all fields and values alternating
+    // [field1, value1, field2, value2, ...]
+    // ─────────────────────────────────────────
+    public List<String> hgetall(String key) {
+        if (isExpired(key)) {
+            deleteKey(key);
+            return new ArrayList<>();
+        }
+        assertHash(key);
+        ConcurrentHashMap<String, String> hash = hashes.get(key);
+        if (hash == null) return new ArrayList<>();
+
+        List<String> result = new ArrayList<>();
+        // entrySet gives us all field-value pairs
+        for (Map.Entry<String, String> entry : hash.entrySet()) {
+            result.add(entry.getKey());    // field
+            result.add(entry.getValue());  // value
+        }
+        return result;
+    }
+
+    // ─────────────────────────────────────────
+    // HDEL key field [field ...]
+    // Deletes one or more fields from a hash
+    // Returns number of fields actually deleted
+    // ─────────────────────────────────────────
+    public int hdel(String key, List<String> fields) {
+        if (isExpired(key)) { deleteKey(key); return 0; }
+        assertHash(key);
+        ConcurrentHashMap<String, String> hash = hashes.get(key);
+        if (hash == null) return 0;
+
+        int deleted = 0;
+        for (String field : fields) {
+            if (hash.remove(field) != null) {
+                deleted++;
+            }
+        }
+
+        // If hash is now empty delete the key entirely
+        if (hash.isEmpty()) deleteKey(key);
+
+        return deleted;
+    }
+
+    // ─────────────────────────────────────────
+    // HEXISTS key field
+    // Returns 1 if field exists, 0 if not
+    // ─────────────────────────────────────────
+    public int hexists(String key, String field) {
+        if (isExpired(key)) { deleteKey(key); return 0; }
+        assertHash(key);
+        ConcurrentHashMap<String, String> hash = hashes.get(key);
+        if (hash == null) return 0;
+        return hash.containsKey(field) ? 1 : 0;
+    }
+
+    // ─────────────────────────────────────────
+    // HLEN key
+    // Returns number of fields in the hash
+    // ─────────────────────────────────────────
+    public int hlen(String key) {
+        if (isExpired(key)) { deleteKey(key); return 0; }
+        assertHash(key);
+        ConcurrentHashMap<String, String> hash = hashes.get(key);
+        return hash == null ? 0 : hash.size();
+    }
+
+    // ─────────────────────────────────────────
+    // HKEYS key
+    // Returns all field names
+    // ─────────────────────────────────────────
+    public List<String> hkeys(String key) {
+        if (isExpired(key)) {
+            deleteKey(key);
+            return new ArrayList<>();
+        }
+        assertHash(key);
+        ConcurrentHashMap<String, String> hash = hashes.get(key);
+        if (hash == null) return new ArrayList<>();
+        return new ArrayList<>(hash.keySet());
+    }
+
+    // ─────────────────────────────────────────
+    // HVALS key
+    // Returns all values
+    // ─────────────────────────────────────────
+    public List<String> hvals(String key) {
+        if (isExpired(key)) {
+            deleteKey(key);
+            return new ArrayList<>();
+        }
+        assertHash(key);
+        ConcurrentHashMap<String, String> hash = hashes.get(key);
+        if (hash == null) return new ArrayList<>();
+        return new ArrayList<>(hash.values());
+    }
+
+    // ─────────────────────────────────────────
+    // Active expiry background thread
+    // ─────────────────────────────────────────
 
     private void startActiveExpiry() {
         Thread cleanupThread = new Thread(() -> {

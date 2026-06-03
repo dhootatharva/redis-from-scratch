@@ -389,6 +389,104 @@ public class CommandHandler {
                     return RespSerializer.bulkString(value);
                 }
 
+                case "HSET": {
+                    // HSET needs key + at least one field-value pair
+                    // so minimum 3 args total
+                    // and field-value pairs must be even
+                    if (command.size() < 4
+                            || command.size() % 2 != 0) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'hset'"
+                        );
+                    }
+                    int added = store.hset(
+                        command.get(1),
+                        command.subList(2, command.size())
+                    );
+                    return RespSerializer.integer(added);
+                }
+
+                case "HGET": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'hget'"
+                        );
+                    }
+                    String value = store.hget(
+                        command.get(1),
+                        command.get(2)
+                    );
+                    return RespSerializer.bulkString(value);
+                }
+
+                case "HGETALL": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'hgetall'"
+                        );
+                    }
+                    List<String> result = store.hgetall(
+                        command.get(1)
+                    );
+                    return serializeArray(result);
+                }
+
+                case "HDEL": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'hdel'"
+                        );
+                    }
+                    int deleted = store.hdel(
+                        command.get(1),
+                        command.subList(2, command.size())
+                    );
+                    return RespSerializer.integer(deleted);
+                }
+
+                case "HEXISTS": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'hexists'"
+                        );
+                    }
+                    int exists = store.hexists(
+                        command.get(1),
+                        command.get(2)
+                    );
+                    return RespSerializer.integer(exists);
+                }
+
+                case "HLEN": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'hlen'"
+                        );
+                    }
+                    int length = store.hlen(command.get(1));
+                    return RespSerializer.integer(length);
+                }
+
+                case "HKEYS": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'hkeys'"
+                        );
+                    }
+                    List<String> keys = store.hkeys(command.get(1));
+                    return serializeArray(keys);
+                }
+
+                case "HVALS": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'hvals'"
+                        );
+                    }
+                    List<String> vals = store.hvals(command.get(1));
+                    return serializeArray(vals);
+                }
+
                 default: {
                     return RespSerializer.error(
                         "unknown command '" + command.get(0) + "'"
