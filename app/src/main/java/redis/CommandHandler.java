@@ -42,20 +42,43 @@ public class CommandHandler {
                     String key = command.get(1);
                     String value = command.get(2);
                     long expiryMs = -1;
-                    if (command.size() >= 5) {
-                        String option = command.get(3).toUpperCase();
-                        long amount = Long.parseLong(command.get(4));
-                        if (option.equals("EX")) {
-                            expiryMs = amount * 1000;
-                        } else if (option.equals("PX")) {
-                            expiryMs = amount;
+                    boolean nx = false;
+                    boolean xx = false;
+
+                    int i = 3;
+                    while (i < command.size()) {
+                        String option = command.get(i).toUpperCase();
+                        if (option.equals("EX")
+                                && i + 1 < command.size()) {
+                            expiryMs = Long.parseLong(
+                                command.get(i + 1)) * 1000;
+                            i += 2;
+                        } else if (option.equals("PX")
+                                && i + 1 < command.size()) {
+                            expiryMs = Long.parseLong(
+                                command.get(i + 1));
+                            i += 2;
+                        } else if (option.equals("NX")) {
+                            nx = true;
+                            i++;
+                        } else if (option.equals("XX")) {
+                            xx = true;
+                            i++;
                         } else {
                             return RespSerializer.error(
                                 "invalid option for 'set': "
-                                + command.get(3)
+                                + command.get(i)
                             );
                         }
                     }
+
+                    if (nx && store.exists(key) == 1) {
+                        return RespSerializer.nullBulkString();
+                    }
+                    if (xx && store.exists(key) == 0) {
+                        return RespSerializer.nullBulkString();
+                    }
+
                     String result = store.set(key, value, expiryMs);
                     return RespSerializer.simpleString(result);
                 }
@@ -153,6 +176,61 @@ public class CommandHandler {
                     return RespSerializer.integer(value);
                 }
 
+                case "INCRBY": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'incrby'"
+                        );
+                    }
+                    long amount = Long.parseLong(command.get(2));
+                    long value = store.incrby(command.get(1), amount);
+                    return RespSerializer.integer(value);
+                }
+
+                case "DECRBY": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'decrby'"
+                        );
+                    }
+                    long amount = Long.parseLong(command.get(2));
+                    long value = store.decrby(command.get(1), amount);
+                    return RespSerializer.integer(value);
+                }
+
+                case "STRLEN": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'strlen'"
+                        );
+                    }
+                    int length = store.strlen(command.get(1));
+                    return RespSerializer.integer(length);
+                }
+
+                case "GETDEL": {
+                    if (command.size() < 2) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'getdel'"
+                        );
+                    }
+                    String value = store.getdel(command.get(1));
+                    return RespSerializer.bulkString(value);
+                }
+
+                case "SETNX": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'setnx'"
+                        );
+                    }
+                    int result = store.setnx(
+                        command.get(1),
+                        command.get(2)
+                    );
+                    return RespSerializer.integer(result);
+                }
+
                 case "MSET": {
                     if (command.size() < 3
                             || command.size() % 2 == 0) {
@@ -178,6 +256,19 @@ public class CommandHandler {
                     return serializeArray(values);
                 }
 
+                case "APPEND": {
+                    if (command.size() < 3) {
+                        return RespSerializer.error(
+                            "wrong number of arguments for 'append'"
+                        );
+                    }
+                    int length = store.append(
+                        command.get(1),
+                        command.get(2)
+                    );
+                    return RespSerializer.integer(length);
+                }
+
                 case "KEYS": {
                     List<String> keys = store.keys();
                     return serializeArray(keys);
@@ -190,19 +281,6 @@ public class CommandHandler {
                 case "FLUSHALL": {
                     store.flushall();
                     return RespSerializer.simpleString("OK");
-                }
-
-                case "APPEND": {
-                    if (command.size() < 3) {
-                        return RespSerializer.error(
-                            "wrong number of arguments for 'append'"
-                        );
-                    }
-                    int length = store.append(
-                        command.get(1),
-                        command.get(2)
-                    );
-                    return RespSerializer.integer(length);
                 }
 
                 case "LPUSH": {

@@ -8,17 +8,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 public class Store {
 
-    // String storage — key → string value
     private final ConcurrentHashMap<String, String> data
         = new ConcurrentHashMap<>();
 
-    // List storage — key → list of strings
-    // CopyOnWriteArrayList is thread-safe for reads
     private final ConcurrentHashMap<String, CopyOnWriteArrayList<String>>
         lists = new ConcurrentHashMap<>();
 
-    // Expiry storage — key → expiry time in milliseconds
-    // Shared across both strings and lists
     private final ConcurrentHashMap<String, Long> expiry
         = new ConcurrentHashMap<>();
 
@@ -30,17 +25,14 @@ public class Store {
     // Type checking helpers
     // ─────────────────────────────────────────
 
-    // Is this key a string type?
     private boolean isString(String key) {
         return data.containsKey(key);
     }
 
-    // Is this key a list type?
     private boolean isList(String key) {
         return lists.containsKey(key);
     }
 
-    // Throws if key exists but is a string, not a list
     private void assertList(String key) {
         if (isString(key)) {
             throw new RuntimeException(
@@ -50,7 +42,6 @@ public class Store {
         }
     }
 
-    // Throws if key exists but is a list, not a string
     private void assertString(String key) {
         if (isList(key)) {
             throw new RuntimeException(
@@ -61,7 +52,7 @@ public class Store {
     }
 
     // ─────────────────────────────────────────
-    // Expiry helpers — same as before
+    // Expiry helpers
     // ─────────────────────────────────────────
 
     private boolean isExpired(String key) {
@@ -77,11 +68,10 @@ public class Store {
     }
 
     // ─────────────────────────────────────────
-    // STRING COMMANDS
+    // SET key value [EX ms] [expiryMs]
     // ─────────────────────────────────────────
 
     public String set(String key, String value, long expiryMs) {
-        // If key was a list before, clear it
         lists.remove(key);
         data.put(key, value);
         if (expiryMs > 0) {
@@ -97,11 +87,19 @@ public class Store {
         return set(key, value, -1);
     }
 
+    // ─────────────────────────────────────────
+    // GET key
+    // ─────────────────────────────────────────
+
     public String get(String key) {
         if (isExpired(key)) { deleteKey(key); return null; }
         assertString(key);
         return data.get(key);
     }
+
+    // ─────────────────────────────────────────
+    // DEL key [key ...]
+    // ─────────────────────────────────────────
 
     public int del(List<String> keys) {
         int deleted = 0;
@@ -116,11 +114,19 @@ public class Store {
         return deleted;
     }
 
+    // ─────────────────────────────────────────
+    // EXISTS key
+    // ─────────────────────────────────────────
+
     public int exists(String key) {
         if (isExpired(key)) { deleteKey(key); return 0; }
         return (data.containsKey(key)
             || lists.containsKey(key)) ? 1 : 0;
     }
+
+    // ─────────────────────────────────────────
+    // EXPIRE key seconds
+    // ─────────────────────────────────────────
 
     public int expire(String key, long seconds) {
         boolean keyExists = data.containsKey(key)
@@ -130,6 +136,10 @@ public class Store {
             System.currentTimeMillis() + (seconds * 1000));
         return 1;
     }
+
+    // ─────────────────────────────────────────
+    // TTL key
+    // ─────────────────────────────────────────
 
     public long ttl(String key) {
         boolean keyExists = data.containsKey(key)
@@ -142,6 +152,10 @@ public class Store {
             (expiryTime - System.currentTimeMillis()) / 1000);
     }
 
+    // ─────────────────────────────────────────
+    // PTTL key
+    // ─────────────────────────────────────────
+
     public long pttl(String key) {
         boolean keyExists = data.containsKey(key)
             || lists.containsKey(key);
@@ -153,12 +167,20 @@ public class Store {
             expiryTime - System.currentTimeMillis());
     }
 
+    // ─────────────────────────────────────────
+    // PERSIST key
+    // ─────────────────────────────────────────
+
     public int persist(String key) {
         if (!data.containsKey(key)
                 && !lists.containsKey(key)) return 0;
         Long removed = expiry.remove(key);
         return removed != null ? 1 : 0;
     }
+
+    // ─────────────────────────────────────────
+    // INCR key
+    // ─────────────────────────────────────────
 
     public long incr(String key) {
         if (isExpired(key)) deleteKey(key);
@@ -176,6 +198,10 @@ public class Store {
         return value;
     }
 
+    // ─────────────────────────────────────────
+    // DECR key
+    // ─────────────────────────────────────────
+
     public long decr(String key) {
         if (isExpired(key)) deleteKey(key);
         assertString(key);
@@ -192,6 +218,10 @@ public class Store {
         return value;
     }
 
+    // ─────────────────────────────────────────
+    // MSET key value [key value ...]
+    // ─────────────────────────────────────────
+
     public String mset(List<String> args) {
         for (int i = 0; i < args.size(); i += 2) {
             String key = args.get(i);
@@ -202,6 +232,10 @@ public class Store {
         return "OK";
     }
 
+    // ─────────────────────────────────────────
+    // MGET key [key ...]
+    // ─────────────────────────────────────────
+
     public List<String> mget(List<String> keys) {
         List<String> results = new ArrayList<>();
         for (String key : keys) {
@@ -209,7 +243,6 @@ public class Store {
                 deleteKey(key);
                 results.add(null);
             } else if (isList(key)) {
-                // MGET on a list key returns null
                 results.add(null);
             } else {
                 results.add(data.get(key));
@@ -217,6 +250,10 @@ public class Store {
         }
         return results;
     }
+
+    // ─────────────────────────────────────────
+    // KEYS *
+    // ─────────────────────────────────────────
 
     public List<String> keys() {
         List<String> result = new ArrayList<>();
@@ -229,9 +266,17 @@ public class Store {
         return result;
     }
 
+    // ─────────────────────────────────────────
+    // DBSIZE
+    // ─────────────────────────────────────────
+
     public int dbsize() {
         return keys().size();
     }
+
+    // ─────────────────────────────────────────
+    // FLUSHALL
+    // ─────────────────────────────────────────
 
     public String flushall() {
         data.clear();
@@ -239,6 +284,10 @@ public class Store {
         expiry.clear();
         return "OK";
     }
+
+    // ─────────────────────────────────────────
+    // APPEND key value
+    // ─────────────────────────────────────────
 
     public int append(String key, String value) {
         if (isExpired(key)) deleteKey(key);
@@ -250,99 +299,114 @@ public class Store {
     }
 
     // ─────────────────────────────────────────
+    // STRLEN key
+    // ─────────────────────────────────────────
+
+    public int strlen(String key) {
+        if (isExpired(key)) { deleteKey(key); return 0; }
+        assertString(key);
+        String value = data.get(key);
+        return value == null ? 0 : value.length();
+    }
+
+    // ─────────────────────────────────────────
+    // INCRBY key amount
+    // ─────────────────────────────────────────
+
+    public long incrby(String key, long amount) {
+        if (isExpired(key)) deleteKey(key);
+        assertString(key);
+        String current = data.getOrDefault(key, "0");
+        long value;
+        try {
+            value = Long.parseLong(current);
+        } catch (NumberFormatException e) {
+            throw new RuntimeException(
+                "value is not an integer or out of range");
+        }
+        value += amount;
+        data.put(key, String.valueOf(value));
+        return value;
+    }
+
+    // ─────────────────────────────────────────
+    // DECRBY key amount
+    // ─────────────────────────────────────────
+
+    public long decrby(String key, long amount) {
+        return incrby(key, -amount);
+    }
+
+    // ─────────────────────────────────────────
+    // GETDEL key
+    // ─────────────────────────────────────────
+
+    public String getdel(String key) {
+        if (isExpired(key)) { deleteKey(key); return null; }
+        assertString(key);
+        String value = data.remove(key);
+        if (value != null) expiry.remove(key);
+        return value;
+    }
+
+    // ─────────────────────────────────────────
+    // SETNX key value
+    // ─────────────────────────────────────────
+
+    public int setnx(String key, String value) {
+        if (isExpired(key)) deleteKey(key);
+        String existing = data.putIfAbsent(key, value);
+        return existing == null ? 1 : 0;
+    }
+
+    // ─────────────────────────────────────────
     // LIST COMMANDS
     // ─────────────────────────────────────────
 
-    // ─────────────────────────────────────────
-    // LPUSH key value [value ...]
-    // Adds values to the LEFT (front) of the list
-    // Creates the list if it does not exist
-    // Returns new length of the list
-    // ─────────────────────────────────────────
     public long lpush(String key, List<String> values) {
         if (isExpired(key)) deleteKey(key);
         assertList(key);
-
-        // Get existing list or create a new one
         CopyOnWriteArrayList<String> list =
             lists.computeIfAbsent(key,
                 k -> new CopyOnWriteArrayList<>());
-
-        // Add each value to the front
-        // We add in reverse so that LPUSH a b c
-        // results in [c, b, a] — same as real Redis
         List<String> reversed = new ArrayList<>(values);
         Collections.reverse(reversed);
         for (String value : reversed) {
             list.add(0, value);
         }
-
         return list.size();
     }
 
-    // ─────────────────────────────────────────
-    // RPUSH key value [value ...]
-    // Adds values to the RIGHT (back) of the list
-    // Returns new length of the list
-    // ─────────────────────────────────────────
     public long rpush(String key, List<String> values) {
         if (isExpired(key)) deleteKey(key);
         assertList(key);
-
         CopyOnWriteArrayList<String> list =
             lists.computeIfAbsent(key,
                 k -> new CopyOnWriteArrayList<>());
-
-        // Add each value to the back — order preserved
         list.addAll(values);
-
         return list.size();
     }
 
-    // ─────────────────────────────────────────
-    // LPOP key
-    // Removes and returns the leftmost element
-    // Returns null if list is empty or does not exist
-    // ─────────────────────────────────────────
     public String lpop(String key) {
         if (isExpired(key)) { deleteKey(key); return null; }
         assertList(key);
-
         CopyOnWriteArrayList<String> list = lists.get(key);
         if (list == null || list.isEmpty()) return null;
-
         String value = list.remove(0);
-
-        // If list is now empty, delete the key entirely
-        // Real Redis does this automatically
         if (list.isEmpty()) deleteKey(key);
-
         return value;
     }
 
-    // ─────────────────────────────────────────
-    // RPOP key
-    // Removes and returns the rightmost element
-    // ─────────────────────────────────────────
     public String rpop(String key) {
         if (isExpired(key)) { deleteKey(key); return null; }
         assertList(key);
-
         CopyOnWriteArrayList<String> list = lists.get(key);
         if (list == null || list.isEmpty()) return null;
-
         String value = list.remove(list.size() - 1);
-
         if (list.isEmpty()) deleteKey(key);
-
         return value;
     }
 
-    // ─────────────────────────────────────────
-    // LLEN key
-    // Returns number of elements in the list
-    // Returns 0 if key does not exist
-    // ─────────────────────────────────────────
     public long llen(String key) {
         if (isExpired(key)) { deleteKey(key); return 0; }
         assertList(key);
@@ -350,62 +414,37 @@ public class Store {
         return list == null ? 0 : list.size();
     }
 
-    // ─────────────────────────────────────────
-    // LRANGE key start stop
-    // Returns elements from start to stop index
-    // Supports negative indexes
-    // ─────────────────────────────────────────
     public List<String> lrange(String key, int start, int stop) {
-        if (isExpired(key)) { deleteKey(key); return new ArrayList<>(); }
+        if (isExpired(key)) {
+            deleteKey(key);
+            return new ArrayList<>();
+        }
         assertList(key);
-
         CopyOnWriteArrayList<String> list = lists.get(key);
         if (list == null || list.isEmpty()) return new ArrayList<>();
-
         int size = list.size();
-
-        // Convert negative indexes to positive
-        // -1 means last element = size - 1
-        // -2 means second to last = size - 2
         if (start < 0) start = Math.max(0, size + start);
         if (stop < 0) stop = size + stop;
-
-        // Clamp stop to valid range
         stop = Math.min(stop, size - 1);
-
-        // Invalid range — return empty list
         if (start > stop) return new ArrayList<>();
-
-        // subList is exclusive on the end so we add 1
         return new ArrayList<>(list.subList(start, stop + 1));
     }
 
-    // ─────────────────────────────────────────
-    // LINDEX key index
-    // Returns element at given index
-    // Returns null if out of range
-    // ─────────────────────────────────────────
     public String lindex(String key, int index) {
         if (isExpired(key)) { deleteKey(key); return null; }
         assertList(key);
-
         CopyOnWriteArrayList<String> list = lists.get(key);
         if (list == null) return null;
-
         int size = list.size();
-
-        // Convert negative index
         if (index < 0) index = size + index;
-
-        // Out of range
         if (index < 0 || index >= size) return null;
-
         return list.get(index);
     }
 
     // ─────────────────────────────────────────
     // Active expiry background thread
     // ─────────────────────────────────────────
+
     private void startActiveExpiry() {
         Thread cleanupThread = new Thread(() -> {
             while (true) {
