@@ -7,13 +7,11 @@ import java.net.Socket;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class Server {
 
     private static final int PORT = 6379;
-
-    // Maximum number of threads in our pool
-    // This means at most 100 clients handled simultaneously
     private static final int THREAD_POOL_SIZE = 100;
 
     public static void main(String[] args) throws IOException {
@@ -21,44 +19,43 @@ public class Server {
         ServerSocket serverSocket = new ServerSocket(PORT);
         serverSocket.setReuseAddress(true);
 
-        // One store shared across ALL threads
-        // ConcurrentHashMap inside Store keeps this safe
         Store store = new Store();
         CommandHandler handler = new CommandHandler(store);
 
-        // Create a thread pool
-        // newFixedThreadPool(100) = exactly 100 threads, no more
         ExecutorService threadPool =
             Executors.newFixedThreadPool(THREAD_POOL_SIZE);
 
         System.out.println("Redis server started on port " + PORT);
         System.out.println("Thread pool size: " + THREAD_POOL_SIZE);
 
-        // Shutdown hook — runs when you press Ctrl+C
-        // Cleanly shuts down the thread pool instead of killing it
+        // Shutdown hook — runs when Ctrl+C is pressed
+        // Saves data to disk before the JVM exits
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("\nShutting down server...");
+
+            // Stop accepting new tasks
             threadPool.shutdown();
+            try {
+                // Wait up to 5 seconds for running tasks to finish
+                threadPool.awaitTermination(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            // Save everything to disk
+            store.save();
+
+            System.out.println("Server stopped cleanly.");
         }));
 
-        // Main loop — only accepts connections, never handles them
         while (true) {
-            // Wait for a client
             Socket clientSocket = serverSocket.accept();
-
-            // Immediately hand off to thread pool
-            // This line returns instantly — main thread never blocks
             threadPool.submit(() -> {
                 handleClient(clientSocket, handler);
             });
-
-            // Main thread is already back here, ready for next client
         }
     }
 
-    // This method runs inside a thread pool thread
-    // NOT in the main thread
-    // Each client gets their own independent execution here
     private static void handleClient(
             Socket clientSocket,
             CommandHandler handler) {
@@ -81,7 +78,8 @@ public class Server {
                 if (command == null) {
                     System.out.println("[Thread "
                         + Thread.currentThread().getId()
-                        + "] Client disconnected: " + clientAddress);
+                        + "] Client disconnected: "
+                        + clientAddress);
                     break;
                 }
 
@@ -96,13 +94,15 @@ public class Server {
 
         } catch (IOException e) {
             if (!e.getMessage().contains("Connection reset")) {
-                System.out.println("Client error: " + e.getMessage());
+                System.out.println(
+                    "Client error: " + e.getMessage());
             }
         } finally {
             try {
                 clientSocket.close();
             } catch (IOException e) {
-                System.out.println("Error closing: " + e.getMessage());
+                System.out.println(
+                    "Error closing: " + e.getMessage());
             }
         }
     }

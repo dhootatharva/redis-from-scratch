@@ -283,6 +283,20 @@ public class CommandHandler {
                     return RespSerializer.simpleString("OK");
                 }
 
+                case "SAVE": {
+                    store.save();
+                    return RespSerializer.simpleString("OK");
+                }
+
+                case "BGSAVE": {
+                    // Run save in background thread
+                    // so it does not block the client
+                    new Thread(() -> store.save()).start();
+                    return RespSerializer.simpleString(
+                        "Background saving started"
+                    );
+                }
+
                 case "TYPE": {
                     if (command.size() < 2) {
                         return RespSerializer.error(

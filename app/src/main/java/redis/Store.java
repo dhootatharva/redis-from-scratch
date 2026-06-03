@@ -9,31 +9,59 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 public class Store {
 
-    // String storage
-    private final ConcurrentHashMap<String, String> data
+    // Package-private so Persistence can access them
+    final ConcurrentHashMap<String, String> data
         = new ConcurrentHashMap<>();
 
-    // List storage
-    private final ConcurrentHashMap<String, CopyOnWriteArrayList<String>>
+    final ConcurrentHashMap<String, CopyOnWriteArrayList<String>>
         lists = new ConcurrentHashMap<>();
 
-    // Hash storage — key → (field → value)
-    // A hash is a map inside a map
-    private final ConcurrentHashMap<String,
+    final ConcurrentHashMap<String,
         ConcurrentHashMap<String, String>> hashes
         = new ConcurrentHashMap<>();
 
-    // Expiry storage
-    private final ConcurrentHashMap<String, Long> expiry
+    final ConcurrentHashMap<String, Long> expiry
         = new ConcurrentHashMap<>();
 
     public Store() {
+        // Load persisted data from disk on startup
+        Persistence.load(data, lists, hashes, expiry);
         startActiveExpiry();
+        startBackgroundSave();
     }
 
     // ─────────────────────────────────────────
-    // Type checking helpers
+    // Save snapshot to disk
+    // Called by Server on shutdown
     // ─────────────────────────────────────────
+    public void save() {
+        Persistence.save(data, lists, hashes, expiry);
+    }
+
+    // ─────────────────────────────────────────
+    // Background save thread
+    // Saves to disk every 60 seconds automatically
+    // This ensures data survives even if the server
+    // is killed without a clean shutdown
+    // ─────────────────────────────────────────
+    private void startBackgroundSave() {
+        Thread saveThread = new Thread(() -> {
+            while (true) {
+                try {
+                    // Wait 60 seconds between saves
+                    Thread.sleep(60_000);
+                } catch (InterruptedException e) {
+                    break;
+                }
+                Persistence.save(data, lists, hashes, expiry);
+            }
+        });
+        saveThread.setDaemon(true);
+        saveThread.setName("background-save");
+        saveThread.start();
+        System.out.println("Background save thread started" +
+            " (saves every 60 seconds)");
+    }
 
     private boolean isString(String key) {
         return data.containsKey(key);
@@ -74,10 +102,6 @@ public class Store {
         }
     }
 
-    // ─────────────────────────────────────────
-    // Expiry helpers
-    // ─────────────────────────────────────────
-
     private boolean isExpired(String key) {
         Long expiryTime = expiry.get(key);
         if (expiryTime == null) return false;
@@ -90,10 +114,6 @@ public class Store {
         hashes.remove(key);
         expiry.remove(key);
     }
-
-    // ─────────────────────────────────────────
-    // STRING COMMANDS
-    // ─────────────────────────────────────────
 
     public String set(String key, String value, long expiryMs) {
         lists.remove(key);
@@ -451,28 +471,16 @@ public class Store {
     // HASH COMMANDS
     // ─────────────────────────────────────────
 
-    // ─────────────────────────────────────────
-    // HSET key field value [field value ...]
-    // Sets one or more fields in a hash
-    // Creates the hash if it does not exist
-    // Returns number of NEW fields added
-    // (updating existing fields does not count)
-    // ─────────────────────────────────────────
     public int hset(String key, List<String> fieldValues) {
         if (isExpired(key)) deleteKey(key);
         assertHash(key);
-
-        // Get existing hash or create new one
         ConcurrentHashMap<String, String> hash =
             hashes.computeIfAbsent(key,
                 k -> new ConcurrentHashMap<>());
-
         int added = 0;
-        // fieldValues comes in pairs: [field1, val1, field2, val2]
         for (int i = 0; i < fieldValues.size(); i += 2) {
             String field = fieldValues.get(i);
             String value = fieldValues.get(i + 1);
-            // put() returns null if field is new
             if (hash.put(field, value) == null) {
                 added++;
             }
@@ -480,11 +488,6 @@ public class Store {
         return added;
     }
 
-    // ─────────────────────────────────────────
-    // HGET key field
-    // Returns value of one field
-    // Returns null if key or field does not exist
-    // ─────────────────────────────────────────
     public String hget(String key, String field) {
         if (isExpired(key)) { deleteKey(key); return null; }
         assertHash(key);
@@ -493,11 +496,6 @@ public class Store {
         return hash.get(field);
     }
 
-    // ─────────────────────────────────────────
-    // HGETALL key
-    // Returns all fields and values alternating
-    // [field1, value1, field2, value2, ...]
-    // ─────────────────────────────────────────
     public List<String> hgetall(String key) {
         if (isExpired(key)) {
             deleteKey(key);
@@ -506,44 +504,29 @@ public class Store {
         assertHash(key);
         ConcurrentHashMap<String, String> hash = hashes.get(key);
         if (hash == null) return new ArrayList<>();
-
         List<String> result = new ArrayList<>();
-        // entrySet gives us all field-value pairs
         for (Map.Entry<String, String> entry : hash.entrySet()) {
-            result.add(entry.getKey());    // field
-            result.add(entry.getValue());  // value
+            result.add(entry.getKey());
+            result.add(entry.getValue());
         }
         return result;
     }
 
-    // ─────────────────────────────────────────
-    // HDEL key field [field ...]
-    // Deletes one or more fields from a hash
-    // Returns number of fields actually deleted
-    // ─────────────────────────────────────────
     public int hdel(String key, List<String> fields) {
         if (isExpired(key)) { deleteKey(key); return 0; }
         assertHash(key);
         ConcurrentHashMap<String, String> hash = hashes.get(key);
         if (hash == null) return 0;
-
         int deleted = 0;
         for (String field : fields) {
             if (hash.remove(field) != null) {
                 deleted++;
             }
         }
-
-        // If hash is now empty delete the key entirely
         if (hash.isEmpty()) deleteKey(key);
-
         return deleted;
     }
 
-    // ─────────────────────────────────────────
-    // HEXISTS key field
-    // Returns 1 if field exists, 0 if not
-    // ─────────────────────────────────────────
     public int hexists(String key, String field) {
         if (isExpired(key)) { deleteKey(key); return 0; }
         assertHash(key);
@@ -552,10 +535,6 @@ public class Store {
         return hash.containsKey(field) ? 1 : 0;
     }
 
-    // ─────────────────────────────────────────
-    // HLEN key
-    // Returns number of fields in the hash
-    // ─────────────────────────────────────────
     public int hlen(String key) {
         if (isExpired(key)) { deleteKey(key); return 0; }
         assertHash(key);
@@ -563,10 +542,6 @@ public class Store {
         return hash == null ? 0 : hash.size();
     }
 
-    // ─────────────────────────────────────────
-    // HKEYS key
-    // Returns all field names
-    // ─────────────────────────────────────────
     public List<String> hkeys(String key) {
         if (isExpired(key)) {
             deleteKey(key);
@@ -578,10 +553,6 @@ public class Store {
         return new ArrayList<>(hash.keySet());
     }
 
-    // ─────────────────────────────────────────
-    // HVALS key
-    // Returns all values
-    // ─────────────────────────────────────────
     public List<String> hvals(String key) {
         if (isExpired(key)) {
             deleteKey(key);
