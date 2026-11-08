@@ -1,0 +1,7 @@
+.gradle
+.git
+.gitignore
+*.rdb
+*.rdb.tmp
+app/src
+app/bin
