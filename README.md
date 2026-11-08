@@ -1,5 +1,9 @@
 # redis-from-scratch
 
+[![tests](https://github.com/dhootatharva/redis-from-scratch/actions/workflows/tests.yml/badge.svg)](https://github.com/dhootatharva/redis-from-scratch/actions/workflows/tests.yml)
+![Java 17](https://img.shields.io/badge/Java-17-blue)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 A Redis-compatible in-memory key-value server written from scratch in Java 17, with no external dependencies. It speaks the Redis wire protocol (RESP), so `redis-cli` and standard Redis client libraries can talk to it. It supports 42 commands across strings, lists and hashes, key expiry, concurrent clients, and snapshot persistence with crash-safe writes.
 
 ```text
