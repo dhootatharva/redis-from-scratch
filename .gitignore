@@ -12,6 +12,8 @@
 
 # Package Files #
 *.jar
+# ...but keep the Gradle wrapper so ./gradlew works after cloning
+!gradle/wrapper/gradle-wrapper.jar
 *.war
 *.nar
 *.ear
