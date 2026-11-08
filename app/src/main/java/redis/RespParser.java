@@ -1,7 +1,9 @@
 package redis;
 
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -12,8 +14,9 @@ public class RespParser {
     private final InputStream input;
 
     // Constructor — give the parser an input stream to read from
+    // Buffered so each read() does not become a separate socket call
     public RespParser(InputStream input) {
-        this.input = input;
+        this.input = new BufferedInputStream(input);
     }
 
     // Main method — parse one complete command from the stream
@@ -105,7 +108,7 @@ public class RespParser {
         input.read(); // \n
 
         // Convert the byte array to a String and return it
-        return new String(buffer);
+        return new String(buffer, StandardCharsets.UTF_8);
     }
 
     // Helper — read bytes until we hit \r\n

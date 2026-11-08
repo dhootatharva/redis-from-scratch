@@ -1,5 +1,6 @@
 package redis;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -291,14 +292,16 @@ public class Store {
         String current = data.getOrDefault(key, "");
         String newValue = current + value;
         data.put(key, newValue);
-        return newValue.length();
+        // Redis reports lengths in bytes
+        return newValue.getBytes(StandardCharsets.UTF_8).length;
     }
 
     public int strlen(String key) {
         if (isExpired(key)) { deleteKey(key); return 0; }
         assertString(key);
         String value = data.get(key);
-        return value == null ? 0 : value.length();
+        return value == null ? 0
+            : value.getBytes(StandardCharsets.UTF_8).length;
     }
 
     public long incrby(String key, long amount) {
@@ -395,9 +398,9 @@ public class Store {
         CopyOnWriteArrayList<String> list =
             lists.computeIfAbsent(key,
                 k -> new CopyOnWriteArrayList<>());
-        List<String> reversed = new ArrayList<>(values);
-        Collections.reverse(reversed);
-        for (String value : reversed) {
+        // Like Redis, each value is pushed onto the head in turn,
+        // so LPUSH k a b c leaves the list as c, b, a
+        for (String value : values) {
             list.add(0, value);
         }
         return list.size();

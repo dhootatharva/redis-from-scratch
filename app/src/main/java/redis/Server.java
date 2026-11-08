@@ -11,10 +11,15 @@ import java.util.concurrent.TimeUnit;
 
 public class Server {
 
-    private static final int PORT = 6379;
+    private static final int DEFAULT_PORT = 6379;
     private static final int THREAD_POOL_SIZE = 100;
 
     public static void main(String[] args) throws IOException {
+
+        // Optional port argument: java -jar app.jar 6380
+        final int PORT = args.length > 0
+            ? Integer.parseInt(args[0])
+            : DEFAULT_PORT;
 
         ServerSocket serverSocket = new ServerSocket(PORT);
         serverSocket.setReuseAddress(true);

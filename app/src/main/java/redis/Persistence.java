@@ -1,6 +1,11 @@
 package redis;
 
 import java.io.*;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -30,7 +35,9 @@ public class Persistence {
     // Called when server shuts down (Ctrl+C)
     // or periodically in background
     // ─────────────────────────────────────────
-    public static void save(
+    // synchronized: the 60 s background save, SAVE, BGSAVE and the
+    // shutdown hook can all fire at once and share the same temp file
+    public static synchronized void save(
             ConcurrentHashMap<String, String> data,
             ConcurrentHashMap<String,
                 CopyOnWriteArrayList<String>> lists,
@@ -151,9 +158,28 @@ public class Persistence {
             return;
         }
 
-        // Rename temp file to actual RDB file
-        // This is atomic on most operating systems
-        new File(tempFile).renameTo(new File(RDB_FILE));
+        // Replace dump.rdb with the finished temp file.
+        // File.renameTo fails silently on Windows when the target
+        // already exists, so use Files.move with REPLACE_EXISTING
+        // (and an atomic move where the filesystem supports it).
+        Path source = Paths.get(tempFile);
+        Path target = Paths.get(RDB_FILE);
+        try {
+            Files.move(source, target,
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            try {
+                Files.move(source, target,
+                    StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException ex) {
+                System.out.println("[RDB] Rename failed: "
+                    + ex.getMessage());
+            }
+        } catch (IOException e) {
+            System.out.println("[RDB] Rename failed: "
+                + e.getMessage());
+        }
     }
 
 

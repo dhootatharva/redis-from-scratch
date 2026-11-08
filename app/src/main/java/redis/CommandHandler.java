@@ -1,5 +1,6 @@
 package redis;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 public class CommandHandler {
@@ -520,13 +521,14 @@ public class CommandHandler {
             if (item == null) {
                 sb.append("$-1\r\n");
             } else {
+                // RESP lengths are in bytes, not Java chars
                 sb.append("$")
-                  .append(item.length())
+                  .append(item.getBytes(StandardCharsets.UTF_8).length)
                   .append("\r\n")
                   .append(item)
                   .append("\r\n");
             }
         }
-        return sb.toString().getBytes();
+        return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 }
