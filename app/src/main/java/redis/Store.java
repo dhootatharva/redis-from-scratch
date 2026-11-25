@@ -145,7 +145,7 @@ public class Store {
     private Entry typed(String key, Type type) {
         Entry entry = live(key);
         if (entry != null && entry.type != type) {
-            throw new RuntimeException(WRONGTYPE);
+            throw new RedisError(WRONGTYPE);
         }
         return entry;
     }
@@ -312,9 +312,15 @@ public class Store {
         if (nx && existing != null) return false;
         if (xx && existing == null) return false;
 
-        long expireAt = expiryMs > 0
-            ? clock.getAsLong() + expiryMs
-            : 0;
+        long expireAt = 0;
+        if (expiryMs > 0) {
+            try {
+                expireAt = Math.addExact(clock.getAsLong(), expiryMs);
+            } catch (ArithmeticException e) {
+                throw new RedisError(
+                    "invalid expire time in 'set' command");
+            }
+        }
         // SET replaces whatever was there: any type, any old deadline
         put(key, new Entry(Type.STRING, value, expireAt));
         return true;
@@ -391,10 +397,16 @@ public class Store {
         try {
             value = Long.parseLong(current);
         } catch (NumberFormatException e) {
-            throw new RuntimeException(
+            throw new RedisError(
                 "value is not an integer or out of range");
         }
-        value += amount;
+        // addExact throws instead of silently wrapping around
+        try {
+            value = Math.addExact(value, amount);
+        } catch (ArithmeticException e) {
+            throw new RedisError(
+                "increment or decrement would overflow");
+        }
         if (entry == null) {
             put(key, new Entry(Type.STRING, String.valueOf(value), 0));
         } else {
@@ -413,6 +425,10 @@ public class Store {
     }
 
     public long decrby(String key, long amount) {
+        // -Long.MIN_VALUE does not fit in a long
+        if (amount == Long.MIN_VALUE) {
+            throw new RedisError("decrement would overflow");
+        }
         return incrby(key, -amount);
     }
 
@@ -432,8 +448,14 @@ public class Store {
         return deleted;
     }
 
-    public synchronized int exists(String key) {
-        return live(key) != null ? 1 : 0;
+    // Counts how many of the given keys exist. A key named twice is
+    // counted twice, as in Redis.
+    public synchronized int exists(List<String> keys) {
+        int count = 0;
+        for (String key : keys) {
+            if (live(key) != null) count++;
+        }
+        return count;
     }
 
     public synchronized String type(String key) {
@@ -449,7 +471,7 @@ public class Store {
     public synchronized String rename(String key, String newKey) {
         Entry entry = live(key);
         if (entry == null) {
-            throw new RuntimeException("no such key");
+            throw new RedisError("no such key");
         }
         // Renaming a key to itself changes nothing
         if (key.equals(newKey)) return "OK";
@@ -462,11 +484,13 @@ public class Store {
         return "OK";
     }
 
-    public synchronized List<String> keys() {
+    // All live keys matching a glob pattern such as  user:*
+    public synchronized List<String> keys(String pattern) {
         long now = clock.getAsLong();
         List<String> result = new ArrayList<>();
         for (Map.Entry<String, Entry> item : keyspace.entrySet()) {
-            if (!isExpired(item.getValue(), now)) {
+            if (!isExpired(item.getValue(), now)
+                    && Glob.matches(pattern, item.getKey())) {
                 result.add(item.getKey());
             }
         }
@@ -474,7 +498,12 @@ public class Store {
     }
 
     public synchronized int dbsize() {
-        return keys().size();
+        long now = clock.getAsLong();
+        int count = 0;
+        for (Entry entry : keyspace.values()) {
+            if (!isExpired(entry, now)) count++;
+        }
+        return count;
     }
 
     public synchronized String flushall() {
@@ -490,8 +519,18 @@ public class Store {
     public synchronized int expire(String key, long seconds) {
         Entry entry = live(key);
         if (entry == null) return 0;
-        setDeadline(key, entry,
-            clock.getAsLong() + (seconds * 1000));
+        // A deadline that is not in the future deletes the key now
+        if (seconds <= 0) {
+            remove(key);
+            return 1;
+        }
+        try {
+            setDeadline(key, entry, Math.addExact(clock.getAsLong(),
+                Math.multiplyExact(seconds, 1000L)));
+        } catch (ArithmeticException e) {
+            throw new RedisError(
+                "invalid expire time in 'expire' command");
+        }
         return 1;
     }
 

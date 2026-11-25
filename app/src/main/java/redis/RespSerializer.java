@@ -1,5 +1,7 @@
 package redis;
 
+import java.util.List;
+
 // Builds replies. All text is turned into bytes with Binary.encode,
 // so a stored value goes back to the client byte for byte.
 public class RespSerializer {
@@ -34,18 +36,28 @@ public class RespSerializer {
             // Null bulk string — key does not exist
             return nullBulkString();
         }
-        byte[] body = Binary.encode(value);
-        byte[] header = Binary.encode("$" + body.length + "\r\n");
-        byte[] out = new byte[header.length + body.length + 2];
-        System.arraycopy(header, 0, out, 0, header.length);
-        System.arraycopy(body, 0, out, header.length, body.length);
-        out[out.length - 2] = '\r';
-        out[out.length - 1] = '\n';
-        return out;
+        return Binary.encode(
+            "$" + value.length() + "\r\n" + value + "\r\n");
     }
 
     // Null response — when GET finds no key
     public static byte[] nullBulkString() {
         return Binary.encode("$-1\r\n");
+    }
+
+    // Array of bulk strings — *2\r\n$1\r\na\r\n$1\r\nb\r\n
+    // A null item becomes a null bulk string (used by MGET).
+    public static byte[] array(List<String> items) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("*").append(items.size()).append("\r\n");
+        for (String item : items) {
+            if (item == null) {
+                sb.append("$-1\r\n");
+            } else {
+                sb.append("$").append(item.length()).append("\r\n")
+                  .append(item).append("\r\n");
+            }
+        }
+        return Binary.encode(sb.toString());
     }
 }
