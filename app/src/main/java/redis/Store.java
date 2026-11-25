@@ -3,14 +3,14 @@ package redis;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.SplittableRandom;
 import java.util.function.LongSupplier;
 
 // The keyspace: every key the server holds, with its type, value and
@@ -30,7 +30,7 @@ public class Store {
     // one type, and its value and deadline can never disagree.
     static final class Entry {
         final Type type;
-        Object value;     // String, List<String> or Map<String, String>
+        Object value;     // String, ArrayDeque<String> or Map<String, String>
         long expireAt;    // absolute time in ms; 0 means "never expires"
 
         Entry(Type type, Object value, long expireAt) {
@@ -43,9 +43,11 @@ public class Store {
             return (String) value;
         }
 
+        // A list is a double-ended queue: adding or removing at
+        // either end takes constant time, however long the list is
         @SuppressWarnings("unchecked")
-        List<String> list() {
-            return (List<String>) value;
+        ArrayDeque<String> list() {
+            return (ArrayDeque<String>) value;
         }
 
         @SuppressWarnings("unchecked")
@@ -65,7 +67,18 @@ public class Store {
     // Index of the keys that have a deadline, so the active sweep only
     // looks at those instead of at every key. Always updated together
     // with the keyspace, through put(), remove() and setDeadline().
-    private final Set<String> expiring = new HashSet<>();
+    private final ExpiringKeys expiring = new ExpiringKeys();
+
+    // Active expiry, the way Redis does it: look at a small random
+    // sample instead of at every key.
+    private static final int SWEEP_SAMPLE = 20;
+    // Keep sampling only while more than a quarter of a sample was expired
+    private static final int SWEEP_REPEAT_PERCENT = 25;
+    // and never for longer than this in one sweep
+    private static final long SWEEP_BUDGET_NANOS = 5_000_000;
+
+    private final SplittableRandom random = new SplittableRandom();
+    private long keysExaminedBySweeps = 0;
 
     // Where the snapshot lives, and where "now" comes from.
     // Both are injected so tests can use a temp directory and a
@@ -207,7 +220,7 @@ public class Store {
             Object value;
             switch (entry.type) {
                 case LIST:
-                    value = new ArrayList<>(entry.list());
+                    value = new ArrayDeque<>(entry.list());
                     break;
                 case HASH:
                     value = new LinkedHashMap<>(entry.hash());
@@ -257,25 +270,62 @@ public class Store {
             " (saves every 60 seconds)");
     }
 
-    // One pass of the active sweep: delete every key whose deadline
-    // has passed. Takes the Store lock, so it never runs in the middle
-    // of a client's command. Package-private so tests can run a pass
+    // One pass of the active sweep.
+    //
+    // Checking every key with a deadline costs time in proportion to
+    // how many there are, and holds the lock for all of it. Instead:
+    //   1. pick 20 keys with a deadline at random
+    //   2. delete the ones that have expired
+    //   3. if more than a quarter of them were expired, there are
+    //      probably many more: go back to 1
+    // A sweep also stops after a few milliseconds, so it can never
+    // hold the lock for long. Whatever it misses is still caught by
+    // lazy expiry the moment someone touches the key.
+    //
+    // Takes the Store lock, so it never runs in the middle of a
+    // client's command. Package-private so tests can run a pass
     // directly instead of waiting for the background thread.
     synchronized int removeExpiredKeys() {
-        if (expiring.isEmpty()) return 0;
         long now = clock.getAsLong();
+        long started = System.nanoTime();
         int deleted = 0;
-        Iterator<String> keys = expiring.iterator();
-        while (keys.hasNext()) {
-            String key = keys.next();
-            Entry entry = keyspace.get(key);
-            if (entry != null && isExpired(entry, now)) {
-                keyspace.remove(key);
-                keys.remove();
-                deleted++;
+
+        while (!expiring.isEmpty()) {
+            int population = expiring.size();
+            int sample = Math.min(SWEEP_SAMPLE, population);
+            int expired = 0;
+
+            if (population <= SWEEP_SAMPLE) {
+                // Few enough to check them all. Walk backwards:
+                // removing a key moves the last key into its slot,
+                // and that one has already been looked at.
+                for (int i = population - 1; i >= 0; i--) {
+                    if (removeIfExpired(expiring.get(i), now)) expired++;
+                }
+            } else {
+                for (int i = 0; i < sample && !expiring.isEmpty(); i++) {
+                    String key = expiring.get(
+                        random.nextInt(expiring.size()));
+                    if (removeIfExpired(key, now)) expired++;
+                }
             }
+            deleted += expired;
+
+            if (population <= SWEEP_SAMPLE) break;
+            if (expired * 100 <= sample * SWEEP_REPEAT_PERCENT) break;
+            if (System.nanoTime() - started > SWEEP_BUDGET_NANOS) break;
         }
         return deleted;
+    }
+
+    private boolean removeIfExpired(String key, long now) {
+        keysExaminedBySweeps++;
+        Entry entry = keyspace.get(key);
+        if (entry != null && isExpired(entry, now)) {
+            remove(key);
+            return true;
+        }
+        return false;
     }
 
     private void startActiveExpiry() {
@@ -307,6 +357,10 @@ public class Store {
 
     synchronized int keysWithDeadline() {
         return expiring.size();
+    }
+
+    synchronized long keysExaminedBySweeps() {
+        return keysExaminedBySweeps;
     }
 
     // ─────────────────────────────────────────
@@ -574,27 +628,27 @@ public class Store {
 
     // Returns the list at key, creating an empty one if the key is
     // missing. Throws WRONGTYPE if the key holds another type.
-    private List<String> listForWrite(String key) {
+    private ArrayDeque<String> listForWrite(String key) {
         Entry entry = typed(key, Type.LIST);
         if (entry == null) {
-            entry = new Entry(Type.LIST, new ArrayList<String>(), 0);
+            entry = new Entry(Type.LIST, new ArrayDeque<String>(), 0);
             put(key, entry);
         }
         return entry.list();
     }
 
     public synchronized long lpush(String key, List<String> values) {
-        List<String> list = listForWrite(key);
+        ArrayDeque<String> list = listForWrite(key);
         // Like Redis, each value is pushed onto the head in turn,
         // so LPUSH k a b c leaves the list as c, b, a
         for (String value : values) {
-            list.add(0, value);
+            list.addFirst(value);
         }
         return list.size();
     }
 
     public synchronized long rpush(String key, List<String> values) {
-        List<String> list = listForWrite(key);
+        ArrayDeque<String> list = listForWrite(key);
         list.addAll(values);
         return list.size();
     }
@@ -602,8 +656,8 @@ public class Store {
     public synchronized String lpop(String key) {
         Entry entry = typed(key, Type.LIST);
         if (entry == null) return null;
-        List<String> list = entry.list();
-        String value = list.remove(0);
+        ArrayDeque<String> list = entry.list();
+        String value = list.pollFirst();
         // An empty list does not exist: remove the key with it
         if (list.isEmpty()) remove(key);
         return value;
@@ -612,8 +666,8 @@ public class Store {
     public synchronized String rpop(String key) {
         Entry entry = typed(key, Type.LIST);
         if (entry == null) return null;
-        List<String> list = entry.list();
-        String value = list.remove(list.size() - 1);
+        ArrayDeque<String> list = entry.list();
+        String value = list.pollLast();
         if (list.isEmpty()) remove(key);
         return value;
     }
@@ -627,23 +681,41 @@ public class Store {
             String key, int start, int stop) {
         Entry entry = typed(key, Type.LIST);
         if (entry == null) return new ArrayList<>();
-        List<String> list = entry.list();
+        ArrayDeque<String> list = entry.list();
         int size = list.size();
         if (start < 0) start = Math.max(0, size + start);
         if (stop < 0) stop = size + stop;
         stop = Math.min(stop, size - 1);
         if (start > stop) return new ArrayList<>();
-        return new ArrayList<>(list.subList(start, stop + 1));
+
+        // A deque has no "give me element i", so walk to the start
+        // of the range and copy from there
+        List<String> result = new ArrayList<>(stop - start + 1);
+        Iterator<String> items = list.iterator();
+        for (int i = 0; i <= stop; i++) {
+            String item = items.next();
+            if (i >= start) result.add(item);
+        }
+        return result;
     }
 
     public synchronized String lindex(String key, int index) {
         Entry entry = typed(key, Type.LIST);
         if (entry == null) return null;
-        List<String> list = entry.list();
+        ArrayDeque<String> list = entry.list();
         int size = list.size();
         if (index < 0) index = size + index;
         if (index < 0 || index >= size) return null;
-        return list.get(index);
+
+        // Walk in from whichever end is nearer
+        if (index < size / 2) {
+            Iterator<String> items = list.iterator();
+            for (int i = 0; i < index; i++) items.next();
+            return items.next();
+        }
+        Iterator<String> items = list.descendingIterator();
+        for (int i = size - 1; i > index; i--) items.next();
+        return items.next();
     }
 
     // ─────────────────────────────────────────

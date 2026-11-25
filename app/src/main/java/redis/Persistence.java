@@ -14,10 +14,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedInputStream;
@@ -256,7 +255,7 @@ public class Persistence {
                 } else if (typeByte == TYPE_LIST) {
                     type = Type.LIST;
                     int size = readCount(in);
-                    List<String> list = new ArrayList<>();
+                    ArrayDeque<String> list = new ArrayDeque<>();
                     for (int i = 0; i < size; i++) {
                         list.add(readString(in, version));
                     }
