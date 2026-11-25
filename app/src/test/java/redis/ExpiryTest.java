@@ -58,9 +58,9 @@ class ExpiryTest {
         clock.advance(1001);
         assertEquals(1, store.removeExpiredKeys());
 
-        assertFalse(store.data.containsKey("temporary"));
-        assertTrue(store.data.containsKey("permanent"));
-        assertTrue(store.expiry.isEmpty());
+        assertFalse(store.holdsInMemory("temporary"));
+        assertTrue(store.holdsInMemory("permanent"));
+        assertEquals(0, store.keysWithDeadline());
     }
 
     @Test

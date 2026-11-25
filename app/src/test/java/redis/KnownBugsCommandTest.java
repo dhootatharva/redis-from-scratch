@@ -37,35 +37,6 @@ class KnownBugsCommandTest {
             StandardCharsets.UTF_8);
     }
 
-    // ── Phase 2: keyspace ──
-
-    // Today the key is deleted: it is removed as the "destination",
-    // re-added, then removed again as the "source".
-    @Test
-    void renamingAKeyToItselfKeepsIt() {
-        run("SET", "k", "v");
-        assertEquals("+OK\r\n", run("RENAME", "k", "k"));
-        assertEquals("$1\r\nv\r\n", run("GET", "k"));
-    }
-
-    // Today SETNX skips the type check and writes a string next to
-    // the list, leaving the key with two types.
-    @Test
-    void setnxDoesNotTouchAKeyOfAnotherType() {
-        run("LPUSH", "l", "a");
-        assertEquals(":0\r\n", run("SETNX", "l", "x"));
-        assertEquals("+list\r\n", run("TYPE", "l"));
-        assertEquals(":1\r\n", run("LLEN", "l"));
-    }
-
-    // Today DEL counts a key that has expired but not been swept yet.
-    @Test
-    void delDoesNotCountAnExpiredKey() {
-        run("SET", "k", "v", "PX", "5");
-        clock.advance(10);
-        assertEquals(":0\r\n", run("DEL", "k"));
-    }
-
     // ── Phase 4: command table and validation ──
 
     @Test

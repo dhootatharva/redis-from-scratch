@@ -88,7 +88,7 @@ class PersistenceTest {
         Store after = newStore();
         after.load();
 
-        assertFalse(after.data.containsKey("short"));
+        assertFalse(after.holdsInMemory("short"));
         assertEquals("$1\r\ny\r\n", run(after, "GET", "forever"));
     }
 

@@ -15,6 +15,26 @@ public class CommandHandler {
 
         String name = command.get(0).toUpperCase();
 
+        // SAVE and BGSAVE are not keyspace commands. Store.save()
+        // takes its own locks in a fixed order (see Store.save), so
+        // it must be called WITHOUT already holding the Store lock.
+        if (name.equals("SAVE") || name.equals("BGSAVE")) {
+            return execute(name, command);
+        }
+
+        // Every other command runs while holding the Store lock, so
+        // only one command touches the data at a time. This is what
+        // makes each command atomic — the same guarantee real Redis
+        // gets from executing all commands on a single thread.
+        // Reading from and writing to sockets happens outside this
+        // lock, so the slow network work still runs in parallel.
+        synchronized (store) {
+            return execute(name, command);
+        }
+    }
+
+    private byte[] execute(String name, List<String> command) {
+
         try {
             switch (name) {
 
@@ -73,15 +93,13 @@ public class CommandHandler {
                         }
                     }
 
-                    if (nx && store.exists(key) == 1) {
-                        return RespSerializer.nullBulkString();
-                    }
-                    if (xx && store.exists(key) == 0) {
-                        return RespSerializer.nullBulkString();
-                    }
-
-                    String result = store.set(key, value, expiryMs);
-                    return RespSerializer.simpleString(result);
+                    // The NX / XX check and the write are one
+                    // Store call, so they cannot be separated
+                    boolean written =
+                        store.set(key, value, expiryMs, nx, xx);
+                    return written
+                        ? RespSerializer.simpleString("OK")
+                        : RespSerializer.nullBulkString();
                 }
 
                 case "GET": {
