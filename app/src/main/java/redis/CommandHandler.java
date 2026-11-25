@@ -1,6 +1,5 @@
 package redis;
 
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 public class CommandHandler {
@@ -12,6 +11,12 @@ public class CommandHandler {
     }
 
     public byte[] handle(List<String> command) {
+
+        // The server skips empty commands before they get here, but
+        // this method must never throw on any input
+        if (command.isEmpty()) {
+            return RespSerializer.error("empty command");
+        }
 
         String name = command.get(0).toUpperCase();
 
@@ -539,14 +544,15 @@ public class CommandHandler {
             if (item == null) {
                 sb.append("$-1\r\n");
             } else {
-                // RESP lengths are in bytes, not Java chars
+                // RESP lengths are in bytes. Items are binary
+                // strings (see Binary): one char per byte.
                 sb.append("$")
-                  .append(item.getBytes(StandardCharsets.UTF_8).length)
+                  .append(item.length())
                   .append("\r\n")
                   .append(item)
                   .append("\r\n");
             }
         }
-        return sb.toString().getBytes(StandardCharsets.UTF_8);
+        return Binary.encode(sb.toString());
     }
 }

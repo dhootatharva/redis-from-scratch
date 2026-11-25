@@ -28,8 +28,7 @@ class CommandHandlerTest {
     }
 
     private String run(String... command) {
-        return new String(handler.handle(Arrays.asList(command)),
-            StandardCharsets.UTF_8);
+        return TestWire.run(handler, command);
     }
 
     @Test
@@ -216,5 +215,11 @@ class CommandHandlerTest {
         run("LPUSH", "l", "a");
         assertEquals("*3\r\n$1\r\nv\r\n$-1\r\n$-1\r\n",
             run("MGET", "s", "l", "missing"));
+    }
+
+    // The handler must never throw, whatever it is given
+    @Test
+    void emptyCommandIsAnErrorNotAnException() {
+        assertTrue(run().startsWith("-ERR"));
     }
 }

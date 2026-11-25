@@ -1,6 +1,5 @@
 package redis;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -373,14 +372,14 @@ public class Store {
             newValue = entry.string() + value;
             entry.value = newValue;
         }
-        // Redis reports lengths in bytes
-        return newValue.getBytes(StandardCharsets.UTF_8).length;
+        // Redis reports lengths in bytes. Values are binary strings
+        // (see Binary), so length() is the number of bytes.
+        return newValue.length();
     }
 
     public synchronized int strlen(String key) {
         Entry entry = typed(key, Type.STRING);
-        return entry == null ? 0
-            : entry.string().getBytes(StandardCharsets.UTF_8).length;
+        return entry == null ? 0 : entry.string().length();
     }
 
     // Read, add and write back all happen under the Store lock,

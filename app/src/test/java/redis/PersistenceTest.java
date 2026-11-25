@@ -34,9 +34,7 @@ class PersistenceTest {
     }
 
     private static String run(Store store, String... command) {
-        return new String(
-            new CommandHandler(store).handle(Arrays.asList(command)),
-            StandardCharsets.UTF_8);
+        return TestWire.run(new CommandHandler(store), command);
     }
 
     private Store restart(Store before) {

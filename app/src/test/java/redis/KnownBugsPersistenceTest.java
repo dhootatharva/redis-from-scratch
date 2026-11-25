@@ -19,9 +19,7 @@ class KnownBugsPersistenceTest {
     Path tempDir;
 
     private static String run(Store store, String... command) {
-        return new String(
-            new CommandHandler(store).handle(Arrays.asList(command)),
-            StandardCharsets.UTF_8);
+        return TestWire.run(new CommandHandler(store), command);
     }
 
     // Snapshots use DataOutputStream.writeUTF, which cannot write more

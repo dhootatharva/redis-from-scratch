@@ -23,7 +23,11 @@ public class Persistence {
 
     // Magic header — identifies this as our RDB file
     // Like a file signature so we know it is valid
-    private static final String MAGIC = "REDIS0001";
+    // Version 2: strings are binary strings (see Binary), one char
+    // per byte. Version 1 files held ordinary Java text; they are
+    // still readable and are converted while loading.
+    private static final String MAGIC = "REDIS0002";
+    private static final String LEGACY_MAGIC = "REDIS0001";
 
     // Type bytes — one byte at the start of each entry
     // tells us what kind of data follows
@@ -177,7 +181,8 @@ public class Persistence {
 
             // Read and verify magic header
             String magic = in.readUTF();
-            if (!magic.equals(MAGIC)) {
+            boolean legacy = magic.equals(LEGACY_MAGIC);
+            if (!legacy && !magic.equals(MAGIC)) {
                 System.out.println(
                     "[RDB] Invalid file format — ignoring");
                 return;
@@ -200,28 +205,28 @@ public class Persistence {
                 Object value;
 
                 if (typeByte == TYPE_STRING) {
-                    key = in.readUTF();
+                    key = readString(in, legacy);
                     type = Type.STRING;
-                    value = in.readUTF();
+                    value = readString(in, legacy);
 
                 } else if (typeByte == TYPE_LIST) {
-                    key = in.readUTF();
+                    key = readString(in, legacy);
                     type = Type.LIST;
                     int size = in.readInt();
                     List<String> list = new ArrayList<>();
                     for (int i = 0; i < size; i++) {
-                        list.add(in.readUTF());
+                        list.add(readString(in, legacy));
                     }
                     value = list;
 
                 } else if (typeByte == TYPE_HASH) {
-                    key = in.readUTF();
+                    key = readString(in, legacy);
                     type = Type.HASH;
                     int size = in.readInt();
                     Map<String, String> hash = new LinkedHashMap<>();
                     for (int i = 0; i < size; i++) {
-                        String field = in.readUTF();
-                        hash.put(field, in.readUTF());
+                        String field = readString(in, legacy);
+                        hash.put(field, readString(in, legacy));
                     }
                     value = hash;
 
@@ -251,5 +256,15 @@ public class Persistence {
             System.out.println(
                 "[RDB] Load failed: " + e.getMessage());
         }
+    }
+
+    // Read one string from a snapshot. A version 1 file stored the
+    // text as Java saw it after decoding the client's bytes as UTF-8,
+    // so re-encoding it as UTF-8 gives back the bytes the client
+    // originally sent.
+    private static String readString(DataInputStream in, boolean legacy)
+            throws IOException {
+        String text = in.readUTF();
+        return legacy ? Binary.fromText(text) : text;
     }
 }

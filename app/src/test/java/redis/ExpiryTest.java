@@ -30,8 +30,7 @@ class ExpiryTest {
     }
 
     private String run(String... command) {
-        return new String(handler.handle(Arrays.asList(command)),
-            StandardCharsets.UTF_8);
+        return TestWire.run(handler, command);
     }
 
     // Lazy expiry: the key is removed when someone touches it

@@ -1,6 +1,7 @@
 package redis;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -119,6 +120,34 @@ public class Server implements AutoCloseable {
         threadPool.shutdownNow();
     }
 
+    // Send a final reply and close the connection in a way that lets
+    // the reply actually arrive.
+    //
+    // If a socket is closed while bytes from the client are still
+    // unread, the operating system sends a reset (RST) instead of a
+    // normal close, and the client may never see the reply. So: send
+    // the reply, announce "no more data from me", then read and throw
+    // away what the client is still sending, for a short time.
+    private static void replyAndHangUp(Socket socket,
+            OutputStream output, byte[] reply) {
+        try {
+            output.write(reply);
+            output.flush();
+            socket.shutdownOutput();
+            socket.setSoTimeout(1000);
+            InputStream in = socket.getInputStream();
+            byte[] scratch = new byte[4096];
+            long discarded = 0;
+            while (discarded < 1024 * 1024) {
+                int n = in.read(scratch);
+                if (n == -1) break;
+                discarded += n;
+            }
+        } catch (IOException e) {
+            // The client is gone or too slow; closing is all that is left
+        }
+    }
+
     private void handleClient(Socket clientSocket) {
 
         String clientAddress =
@@ -134,7 +163,27 @@ public class Server implements AutoCloseable {
             OutputStream output = clientSocket.getOutputStream();
 
             while (true) {
-                List<String> command = parser.parse();
+                List<String> command;
+                try {
+                    command = parser.parse();
+                } catch (ProtocolException e) {
+                    // Not valid RESP. We can no longer tell where the
+                    // next command starts, so say why and hang up.
+                    System.out.println("[Thread "
+                        + Thread.currentThread().getId()
+                        + "] Protocol error from " + clientAddress
+                        + ": " + e.getMessage());
+                    replyAndHangUp(clientSocket, output,
+                        RespSerializer.error(
+                            "Protocol error: " + e.getMessage()));
+                    break;
+                } catch (OutOfMemoryError e) {
+                    // A value within the protocol limit but larger
+                    // than this JVM's heap. Drop this client only.
+                    replyAndHangUp(clientSocket, output,
+                        RespSerializer.error("out of memory"));
+                    break;
+                }
 
                 if (command == null) {
                     System.out.println("[Thread "
@@ -144,19 +193,34 @@ public class Server implements AutoCloseable {
                     break;
                 }
 
+                // An empty command (*0, or a blank line) gets no
+                // reply at all, as in Redis
+                if (command.isEmpty()) {
+                    continue;
+                }
+
                 System.out.println("[Thread "
                     + Thread.currentThread().getId()
                     + "] Command: " + command);
 
-                byte[] response = handler.handle(command);
+                byte[] response;
+                try {
+                    response = handler.handle(command);
+                } catch (RuntimeException e) {
+                    // A bug in a command must not silently drop the
+                    // connection: the client gets an error reply and
+                    // the stream stays in step
+                    System.out.println("Internal error: " + e);
+                    response = RespSerializer.error("internal error");
+                }
                 output.write(response);
                 output.flush();
             }
 
         } catch (IOException e) {
-            if (!e.getMessage().contains("Connection reset")) {
-                System.out.println(
-                    "Client error: " + e.getMessage());
+            String message = String.valueOf(e.getMessage());
+            if (!message.contains("Connection reset")) {
+                System.out.println("Client error: " + message);
             }
         } finally {
             clients.remove(clientSocket);

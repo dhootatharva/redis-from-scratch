@@ -52,8 +52,7 @@ class ConcurrencyTest {
     }
 
     private String run(String... command) {
-        return new String(handler.handle(Arrays.asList(command)),
-            StandardCharsets.UTF_8);
+        return TestWire.run(handler, command);
     }
 
     // INCR reads, adds one and writes back. Without atomic commands,

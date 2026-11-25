@@ -33,8 +33,7 @@ class KnownBugsCommandTest {
     }
 
     private String run(String... command) {
-        return new String(handler.handle(Arrays.asList(command)),
-            StandardCharsets.UTF_8);
+        return TestWire.run(handler, command);
     }
 
     // ── Phase 4: command table and validation ──
@@ -82,12 +81,5 @@ class KnownBugsCommandTest {
         run("SET", "a", "1");
         run("SET", "b", "2");
         assertEquals(":2\r\n", run("EXISTS", "a", "b", "missing"));
-    }
-
-    // An empty command must not throw out of the handler: an uncaught
-    // exception kills the client's connection.
-    @Test
-    void emptyCommandDoesNotThrow() {
-        assertTrue(run().startsWith("-ERR"));
     }
 }

@@ -1,13 +1,13 @@
 package redis;
 
-import java.nio.charset.StandardCharsets;
-
+// Builds replies. All text is turned into bytes with Binary.encode,
+// so a stored value goes back to the client byte for byte.
 public class RespSerializer {
 
     // Simple string response — +OK\r\n or +PONG\r\n
     // Used for success responses
     public static byte[] simpleString(String value) {
-        return ("+" + value + "\r\n").getBytes(StandardCharsets.UTF_8);
+        return Binary.encode("+" + value + "\r\n");
     }
 
     // Error response — -ERR message\r\n
@@ -17,25 +17,25 @@ public class RespSerializer {
         String line = message.startsWith("WRONGTYPE ")
             ? message
             : "ERR " + message;
-        return ("-" + line + "\r\n").getBytes(StandardCharsets.UTF_8);
+        return Binary.encode("-" + line + "\r\n");
     }
 
     // Integer response — :42\r\n
     // Used for INCR, DEL, LLEN etc
     public static byte[] integer(long value) {
-        return (":" + value + "\r\n").getBytes(StandardCharsets.UTF_8);
+        return Binary.encode(":" + value + "\r\n");
     }
 
     // Bulk string response — $6\r\nfoobar\r\n
-    // The length prefix is the number of bytes, not characters
+    // The length prefix is the number of bytes. For a binary string
+    // that is simply its length: one char per byte.
     public static byte[] bulkString(String value) {
         if (value == null) {
             // Null bulk string — key does not exist
             return nullBulkString();
         }
-        byte[] body = value.getBytes(StandardCharsets.UTF_8);
-        byte[] header = ("$" + body.length + "\r\n")
-            .getBytes(StandardCharsets.UTF_8);
+        byte[] body = Binary.encode(value);
+        byte[] header = Binary.encode("$" + body.length + "\r\n");
         byte[] out = new byte[header.length + body.length + 2];
         System.arraycopy(header, 0, out, 0, header.length);
         System.arraycopy(body, 0, out, header.length, body.length);
@@ -46,6 +46,6 @@ public class RespSerializer {
 
     // Null response — when GET finds no key
     public static byte[] nullBulkString() {
-        return "$-1\r\n".getBytes(StandardCharsets.UTF_8);
+        return Binary.encode("$-1\r\n");
     }
 }

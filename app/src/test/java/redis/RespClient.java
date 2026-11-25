@@ -30,10 +30,18 @@ final class RespClient implements AutoCloseable {
 
     // Encode a command the way redis-cli does: an array of bulk strings
     static byte[] encode(String... args) {
+        byte[][] raw = new byte[args.length][];
+        for (int i = 0; i < args.length; i++) {
+            raw[i] = args[i].getBytes(StandardCharsets.UTF_8);
+        }
+        return encodeBytes(raw);
+    }
+
+    // The same, for arguments that are raw bytes instead of text
+    static byte[] encodeBytes(byte[]... args) {
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
         write(buf, "*" + args.length + "\r\n");
-        for (String arg : args) {
-            byte[] body = arg.getBytes(StandardCharsets.UTF_8);
+        for (byte[] body : args) {
             write(buf, "$" + body.length + "\r\n");
             buf.write(body, 0, body.length);
             write(buf, "\r\n");

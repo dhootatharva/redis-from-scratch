@@ -41,7 +41,7 @@ flowchart LR
 | Component | File | What it does |
 |---|---|---|
 | Network server | `Server.java` | Listens on port 6379 (or the port given as the first argument) and hands each connection to a fixed pool of 100 worker threads. Saves a snapshot from a shutdown hook on Ctrl+C. |
-| Protocol | `RespParser.java`, `RespSerializer.java` | Parses RESP arrays of bulk strings from a buffered socket stream (pipelined commands work); encodes simple strings, errors, integers, bulk strings, nulls and arrays. |
+| Protocol | `RespParser.java`, `RespSerializer.java` | Parses RESP arrays of bulk strings and inline commands from a buffered socket stream (pipelined commands work), checking every length and count against a limit before acting on it. Keys and values are binary-safe. Encodes simple strings, errors, integers, bulk strings, nulls and arrays. |
 | Commands | `CommandHandler.java` | Validates arity and options, maps each command to a store operation, and turns failures into RESP errors. |
 | Keyspace | `Store.java` | One map from key to a typed entry (string, list or hash) that holds the value and its absolute expiry deadline together. Guarded by a single lock. Enforces `WRONGTYPE` across types. |
 | Persistence | `Persistence.java` | Binary snapshot (`dump.rdb`) with a magic header, one type byte per entry, and expiry timestamps. Written to a temp file and then renamed, so a crash mid-write never corrupts the last good snapshot. |
@@ -68,12 +68,16 @@ flowchart LR
 
 **Type safety.** Each key maps to exactly one entry, and an entry has exactly one type, so a key can never hold two types at once. A command that needs a different type gets Redis's `WRONGTYPE` error.
 
+**Binary safety.** Redis keys and values are bytes, not text. Decoding them as UTF-8 would corrupt anything that is not valid UTF-8, so the server decodes with ISO-8859-1, which maps each byte to exactly one char and back. Internally a string holds one char per byte, its length is its byte length, and what a client stores is returned byte for byte. `Binary.java` is the only place that converts.
+
+**Untrusted input.** A length or count from a client is a claim, so the parser checks it before using it, with the same limits as Redis: 512 MB per value, 1,048,576 arguments per command, 64 KB per header line. Input that is not valid RESP gets `-ERR Protocol error: ...` and the connection is closed, because the server can no longer tell where the next command starts. The reply is sent before a lingering close, so it reaches the client even when unread input is still pending. An empty command is ignored, and a bug inside a command becomes an error reply, not a dropped connection.
+
 **Persistence and recovery.**
 - *When it saves:* every 60 seconds in a background thread, on `SAVE`, on `BGSAVE` (non-blocking, on a separate thread), and on shutdown.
 - *What it writes:* the keyspace is copied in memory while holding the store lock, and the copy is written after releasing it. A snapshot therefore shows the data at one instant, and clients are not blocked during the disk write.
 - *How it writes:* the snapshot goes to `dump.rdb.tmp` first and is renamed only after a complete write.
 - *On startup:* the server reloads the snapshot and skips keys whose deadline has already passed. Expiry is stored as absolute time, so TTLs keep counting down across restarts.
-- *Format:* the snapshot is this project's own compact binary format. It is not byte-compatible with real Redis RDB files.
+- *Format:* the snapshot is this project's own compact binary format. It is not byte-compatible with real Redis RDB files. Snapshots written before values became binary-safe (header `REDIS0001`) are still readable and are converted while loading.
 
 **Concurrency.** Each client runs on its own pool thread, which does the network reads, parsing and replies in parallel with other clients. Command execution is serialised by one lock on the store, so every command is atomic: `INCR` never loses an update, and `SET ... NX` has exactly one winner. Real Redis gets the same guarantee by executing all commands on a single thread. The active expiry sweep takes the same lock, so it never runs in the middle of a command.
 
@@ -90,7 +94,7 @@ redis-cli -p 6379 PING                   # -> PONG
 
 ## Tests
 
-`./gradlew test` runs JUnit tests for the protocol layer (parsing pipelined commands, byte-accurate bulk-string lengths for UTF-8 values, reply encoding) and for command behaviour against Redis semantics:
+`./gradlew test` runs JUnit tests for the protocol layer (parsing pipelined and inline commands, binary safety for every byte value, rejection of malformed and oversized input, reply encoding) and for command behaviour against Redis semantics:
 - `SET` with `NX`/`XX`, and the counter commands
 - `LPUSH` ordering and hash commands
 - `WRONGTYPE` errors, `STRLEN` in bytes
@@ -98,7 +102,7 @@ redis-cli -p 6379 PING                   # -> PONG
 
 The suite also includes end-to-end tests that start the server on a free port and talk to it over real TCP sockets (pipelining, a command split across two writes, many clients at once), persistence tests (save, restart, reload, TTLs across downtime), and expiry tests driven by an injected clock, so nothing sleeps.
 
-`./gradlew knownBugs` runs a separate set of tests tagged `known-bug`. They describe correct Redis behaviour that this server does not have yet (binary safety, malformed-input handling, argument validation, and others) and are expected to fail. They stay out of the normal build so it remains green; each fix moves its test into the main suite.
+`./gradlew knownBugs` runs a separate set of tests tagged `known-bug`. They describe correct Redis behaviour that this server does not have yet (argument validation, `KEYS` patterns, values too large for a snapshot, and others) and are expected to fail. They stay out of the normal build so it remains green; each fix moves its test into the main suite.
 
 With Docker (build the jar first):
 
@@ -113,7 +117,9 @@ docker run -p 6379:6379 redis-from-scratch
 ```
 app/src/main/java/redis/
   Server.java          TCP accept loop, thread pool, shutdown hook
-  RespParser.java      RESP request parsing
+  RespParser.java      RESP request parsing and validation
+  ProtocolException.java  input that is not valid RESP
+  Binary.java          bytes <-> internal strings, one char per byte
   RespSerializer.java  RESP response encoding
   CommandHandler.java  command dispatch and validation
   Store.java           keyspace, types, lazy + active expiry, background save
@@ -124,6 +130,8 @@ app/src/test/java/redis/
   ConcurrencyTest.java        atomic commands under many threads
   ExpiryTest.java             lazy and active expiry with a controlled clock
   PersistenceTest.java        snapshot save, restart and reload
+  SnapshotFormatTest.java     snapshot versions and binary data
+  ProtocolTest.java           binary safety and malformed input over sockets
   ServerIntegrationTest.java  real server, real sockets
   KnownBugs*Test.java         failing tests for known bugs (./gradlew knownBugs)
 Dockerfile
@@ -135,7 +143,7 @@ Dockerfile
 - One thread per connection caps concurrent clients at the pool size (100). An NIO event loop would scale further.
 - No pipelining-specific optimisations, pub/sub, transactions (`MULTI`/`EXEC`), sets, sorted sets or replication.
 - The active expiry sweep scans every key with a TTL. Redis samples 20 keys at a time to bound the cost.
-- Snapshots store strings with Java's `writeUTF`, which limits a single key or value to 64 KB when saved.
+- Snapshots store strings with Java's `writeUTF`, which cannot write more than 65,535 encoded bytes per string, and encodes bytes above 127 as two. A key or value over 64 KB of text, or about 32 KB of arbitrary binary data, makes the whole save fail.
 - Snapshot persistence only: writes made after the last snapshot are lost if the process is killed. Redis offers an append-only file for this.
 
 ## License
