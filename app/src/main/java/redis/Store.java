@@ -1,5 +1,6 @@
 package redis;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -155,9 +156,11 @@ public class Store {
     // ─────────────────────────────────────────
 
     // Load persisted data from disk — called once on startup
+    // Throws CorruptSnapshotException if the file is damaged; in that
+    // case nothing is loaded and the keyspace is left untouched.
     public synchronized void load() {
-        Map<String, Entry> loaded = new HashMap<>();
-        Persistence.load(snapshotFile, clock.getAsLong(), loaded);
+        Map<String, Entry> loaded =
+            Persistence.load(snapshotFile, clock.getAsLong());
         for (Map.Entry<String, Entry> item : loaded.entrySet()) {
             put(item.getKey(), item.getValue());
         }
@@ -173,7 +176,10 @@ public class Store {
     // Must NOT be called while holding the Store lock: it takes
     // saveLock first and then the Store lock, and taking them in the
     // opposite order elsewhere could deadlock.
-    public void save() {
+    //
+    // Returns false if the snapshot could not be written. The
+    // previous snapshot file is then still in place, unchanged.
+    public boolean save() {
         synchronized (saveLock) {
             Map<String, Entry> snapshot;
             long now;
@@ -181,7 +187,13 @@ public class Store {
                 now = clock.getAsLong();
                 snapshot = copyKeyspace();
             }
-            Persistence.save(snapshotFile, now, snapshot);
+            try {
+                Persistence.save(snapshotFile, now, snapshot);
+                return true;
+            } catch (IOException e) {
+                System.out.println("[RDB] Save failed: " + e);
+                return false;
+            }
         }
     }
 

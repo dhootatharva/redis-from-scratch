@@ -38,7 +38,17 @@ public class Server implements AutoCloseable {
         // Bind the port first, then load the snapshot and start the
         // background threads (same order as before the refactor)
         Server server = new Server(PORT, store);
-        store.load();
+        try {
+            store.load();
+        } catch (CorruptSnapshotException e) {
+            // Do not start empty: the next automatic save would
+            // overwrite the damaged file and destroy what is left.
+            System.err.println("[RDB] dump.rdb is damaged ("
+                + e.getMessage() + "). Refusing to start.");
+            System.err.println("[RDB] Move or delete the file to "
+                + "start with an empty database.");
+            System.exit(1);
+        }
         store.startBackgroundThreads();
 
         System.out.println("Redis server started on port " + PORT);

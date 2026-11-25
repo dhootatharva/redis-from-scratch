@@ -62,9 +62,9 @@ class SnapshotFormatTest {
         assertArrayEquals(payload, Binary.encode(after.get("blob")));
     }
 
-    // A snapshot written now starts with the version 2 header
+    // A snapshot written now starts with the current header
     @Test
-    void newSnapshotsUseTheVersionTwoHeader() throws IOException {
+    void newSnapshotsUseTheCurrentHeader() throws IOException {
         Path snapshot = tempDir.resolve("dump.rdb");
         Store store = new Store(snapshot, new TestClock());
         new CommandHandler(store).handle(Arrays.asList("SET", "k", "v"));
@@ -73,6 +73,6 @@ class SnapshotFormatTest {
         byte[] file = Files.readAllBytes(snapshot);
         // writeUTF stores a 2-byte length, then the characters
         String header = new String(file, 2, 9, StandardCharsets.US_ASCII);
-        assertEquals("REDIS0002", header);
+        assertEquals("REDIS0003", header);
     }
 }

@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 // Turns a parsed command into a reply.
 //
@@ -44,6 +45,8 @@ public class CommandHandler {
 
     private final Store store;
     private final Map<String, Spec> commands = new HashMap<>();
+    private final AtomicBoolean backgroundSaveRunning =
+        new AtomicBoolean(false);
 
     public CommandHandler(Store store) {
         this.store = store;
@@ -409,15 +412,33 @@ public class CommandHandler {
         // SAVE and BGSAVE are "plain": Store.save() takes its own
         // locks in a fixed order (see Store.save), so it must be
         // called WITHOUT already holding the Store lock.
+        // OK means the snapshot is on disk. If writing failed, the
+        // client is told, instead of being told OK regardless.
         plain("SAVE", 1, a -> {
-            store.save();
+            if (!store.save()) {
+                throw new RedisError(
+                    "snapshot could not be written, "
+                    + "see the server log");
+            }
             return ok();
         });
 
         plain("BGSAVE", -1, a -> {
-            // Run save in a background thread
-            // so it does not block the client
-            new Thread(() -> store.save()).start();
+            // Only one background save at a time: a second request
+            // while one is running is refused, not queued
+            if (!backgroundSaveRunning.compareAndSet(false, true)) {
+                throw new RedisError(
+                    "Background save already in progress");
+            }
+            Thread saver = new Thread(() -> {
+                try {
+                    store.save();
+                } finally {
+                    backgroundSaveRunning.set(false);
+                }
+            });
+            saver.setName("bgsave");
+            saver.start();
             return RespSerializer.simpleString(
                 "Background saving started");
         });
