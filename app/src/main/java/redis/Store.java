@@ -1,12 +1,15 @@
 package redis;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.LongSupplier;
 
 public class Store {
 
@@ -24,11 +27,42 @@ public class Store {
     final ConcurrentHashMap<String, Long> expiry
         = new ConcurrentHashMap<>();
 
+    // Where the snapshot lives, and where "now" comes from.
+    // Both are injected so tests can use a temp directory and a
+    // clock they control instead of the real file and real time.
+    private final Path snapshotFile;
+    private final LongSupplier clock;
+
+    private Thread expiryThread;
+    private Thread saveThread;
+
+    // Production defaults: dump.rdb in the working directory, system clock
     public Store() {
-        // Load persisted data from disk on startup
-        Persistence.load(data, lists, hashes, expiry);
+        this(Paths.get("dump.rdb"), System::currentTimeMillis);
+    }
+
+    // The constructor has no side effects: no disk I/O, no threads.
+    // The server calls load() and startBackgroundThreads() explicitly.
+    public Store(Path snapshotFile, LongSupplier clock) {
+        this.snapshotFile = snapshotFile;
+        this.clock = clock;
+    }
+
+    // Load persisted data from disk — called once on startup
+    public void load() {
+        Persistence.load(snapshotFile, clock.getAsLong(),
+            data, lists, hashes, expiry);
+    }
+
+    public void startBackgroundThreads() {
         startActiveExpiry();
         startBackgroundSave();
+    }
+
+    // Stop the background threads (used by tests and clean shutdown)
+    public void close() {
+        if (expiryThread != null) expiryThread.interrupt();
+        if (saveThread != null) saveThread.interrupt();
     }
 
     // ─────────────────────────────────────────
@@ -36,7 +70,8 @@ public class Store {
     // Called by Server on shutdown
     // ─────────────────────────────────────────
     public void save() {
-        Persistence.save(data, lists, hashes, expiry);
+        Persistence.save(snapshotFile, clock.getAsLong(),
+            data, lists, hashes, expiry);
     }
 
     // ─────────────────────────────────────────
@@ -46,7 +81,7 @@ public class Store {
     // is killed without a clean shutdown
     // ─────────────────────────────────────────
     private void startBackgroundSave() {
-        Thread saveThread = new Thread(() -> {
+        saveThread = new Thread(() -> {
             while (true) {
                 try {
                     // Wait 60 seconds between saves
@@ -54,7 +89,7 @@ public class Store {
                 } catch (InterruptedException e) {
                     break;
                 }
-                Persistence.save(data, lists, hashes, expiry);
+                save();
             }
         });
         saveThread.setDaemon(true);
@@ -106,7 +141,7 @@ public class Store {
     private boolean isExpired(String key) {
         Long expiryTime = expiry.get(key);
         if (expiryTime == null) return false;
-        return System.currentTimeMillis() > expiryTime;
+        return clock.getAsLong() > expiryTime;
     }
 
     private void deleteKey(String key) {
@@ -122,7 +157,7 @@ public class Store {
         data.put(key, value);
         if (expiryMs > 0) {
             expiry.put(key,
-                System.currentTimeMillis() + expiryMs);
+                clock.getAsLong() + expiryMs);
         } else {
             expiry.remove(key);
         }
@@ -166,7 +201,7 @@ public class Store {
             || hashes.containsKey(key);
         if (!keyExists || isExpired(key)) return 0;
         expiry.put(key,
-            System.currentTimeMillis() + (seconds * 1000));
+            clock.getAsLong() + (seconds * 1000));
         return 1;
     }
 
@@ -179,7 +214,7 @@ public class Store {
         Long expiryTime = expiry.get(key);
         if (expiryTime == null) return -1;
         return Math.max(1,
-            (expiryTime - System.currentTimeMillis()) / 1000);
+            (expiryTime - clock.getAsLong()) / 1000);
     }
 
     public long pttl(String key) {
@@ -191,7 +226,7 @@ public class Store {
         Long expiryTime = expiry.get(key);
         if (expiryTime == null) return -1;
         return Math.max(1,
-            expiryTime - System.currentTimeMillis());
+            expiryTime - clock.getAsLong());
     }
 
     public int persist(String key) {
@@ -571,6 +606,23 @@ public class Store {
     // Active expiry background thread
     // ─────────────────────────────────────────
 
+    // One pass of the active sweep: delete every key whose deadline
+    // has passed. Package-private so tests can run a pass directly
+    // instead of waiting for the background thread.
+    int removeExpiredKeys() {
+        if (expiry.isEmpty()) return 0;
+        List<String> expiryKeys =
+            new ArrayList<>(expiry.keySet());
+        int deleted = 0;
+        for (String key : expiryKeys) {
+            if (isExpired(key)) {
+                deleteKey(key);
+                deleted++;
+            }
+        }
+        return deleted;
+    }
+
     private void startActiveExpiry() {
         Thread cleanupThread = new Thread(() -> {
             while (true) {
@@ -579,16 +631,7 @@ public class Store {
                 } catch (InterruptedException e) {
                     break;
                 }
-                if (expiry.isEmpty()) continue;
-                List<String> expiryKeys =
-                    new ArrayList<>(expiry.keySet());
-                int deleted = 0;
-                for (String key : expiryKeys) {
-                    if (isExpired(key)) {
-                        deleteKey(key);
-                        deleted++;
-                    }
-                }
+                int deleted = removeExpiredKeys();
                 if (deleted > 0) {
                     System.out.println(
                         "[Expiry] Cleaned up "
@@ -599,6 +642,7 @@ public class Store {
         cleanupThread.setDaemon(true);
         cleanupThread.setName("expiry-cleanup");
         cleanupThread.start();
+        expiryThread = cleanupThread;
         System.out.println("Active expiry thread started");
     }
 }

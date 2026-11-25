@@ -95,6 +95,10 @@ redis-cli -p 6379 PING                   # -> PONG
 - `WRONGTYPE` errors, `STRLEN` in bytes
 - `TTL`/`PERSIST` return codes, and keys disappearing once they expire
 
+The suite also includes end-to-end tests that start the server on a free port and talk to it over real TCP sockets (pipelining, a command split across two writes, many clients at once), persistence tests (save, restart, reload, TTLs across downtime), and expiry tests driven by an injected clock, so nothing sleeps.
+
+`./gradlew knownBugs` runs a separate set of tests tagged `known-bug`. They describe correct Redis behaviour that this server does not have yet (lost updates under concurrency, `SET NX` with two winners, binary safety, and others) and are expected to fail. They stay out of the normal build so it remains green; each fix moves its test into the main suite.
+
 With Docker (build the jar first):
 
 ```bash
@@ -114,8 +118,12 @@ app/src/main/java/redis/
   Store.java           keyspace, types, lazy + active expiry, background save
   Persistence.java     binary snapshot save/load
 app/src/test/java/redis/
-  RespTest.java            protocol parsing and encoding
-  CommandHandlerTest.java  command semantics
+  RespTest.java               protocol parsing and encoding
+  CommandHandlerTest.java     command semantics
+  ExpiryTest.java             lazy and active expiry with a controlled clock
+  PersistenceTest.java        snapshot save, restart and reload
+  ServerIntegrationTest.java  real server, real sockets
+  KnownBugs*Test.java         failing tests for known bugs (./gradlew knownBugs)
 Dockerfile
 ```
 

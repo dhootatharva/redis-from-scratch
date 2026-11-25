@@ -21,8 +21,28 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 tasks.named('test') {
-    useJUnitPlatform()
+    // Tests tagged 'known-bug' describe correct behaviour that the
+    // server does not have yet. They are kept out of the normal build
+    // so it stays green; run them with: ./gradlew knownBugs
+    useJUnitPlatform {
+        excludeTags 'known-bug'
+    }
     // Run tests in build/ so the store's dump.rdb never lands in the source tree
+    def workDir = layout.buildDirectory.dir('test-work').get().asFile
+    workingDir = workDir
+    doFirst { workDir.mkdirs() }
+}
+
+// Runs only the known-bug tests. This task is EXPECTED to fail until
+// the bugs are fixed; each fix moves its test into the normal suite.
+tasks.register('knownBugs', Test) {
+    description = 'Runs tests for known bugs (expected to fail until fixed).'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform {
+        includeTags 'known-bug'
+    }
     def workDir = layout.buildDirectory.dir('test-work').get().asFile
     workingDir = workDir
     doFirst { workDir.mkdirs() }

@@ -4,19 +4,27 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.Arrays;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class CommandHandlerTest {
 
+    @TempDir
+    Path tempDir;
+
+    private TestClock clock;
     private CommandHandler handler;
 
+    // Each test gets a fresh, empty store: its own temp directory,
+    // a clock the test controls, and no background threads
     @BeforeEach
     void setUp() {
-        Store store = new Store();
+        clock = new TestClock();
+        Store store = new Store(tempDir.resolve("dump.rdb"), clock);
         handler = new CommandHandler(store);
-        run("FLUSHALL");
     }
 
     private String run(String... command) {
@@ -89,9 +97,9 @@ class CommandHandlerTest {
     }
 
     @Test
-    void expiredKeysDisappear() throws InterruptedException {
+    void expiredKeysDisappear() {
         run("SET", "k", "v", "PX", "50");
-        Thread.sleep(120);
+        clock.advance(120);
         assertEquals("$-1\r\n", run("GET", "k"));
         assertEquals(":0\r\n", run("EXISTS", "k"));
     }

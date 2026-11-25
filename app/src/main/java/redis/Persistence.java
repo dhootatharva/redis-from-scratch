@@ -4,7 +4,6 @@ import java.io.*;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
@@ -13,9 +12,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 public class Persistence {
-
-    // The file where we save the snapshot
-    private static final String RDB_FILE = "dump.rdb";
 
     // Magic header — identifies this as our RDB file
     // Like a file signature so we know it is valid
@@ -37,7 +33,11 @@ public class Persistence {
     // ─────────────────────────────────────────
     // synchronized: the 60 s background save, SAVE, BGSAVE and the
     // shutdown hook can all fire at once and share the same temp file
+    // 'file' is where the snapshot goes; 'now' is the current time,
+    // passed in by the Store so tests can control it
     public static synchronized void save(
+            Path file,
+            long now,
             ConcurrentHashMap<String, String> data,
             ConcurrentHashMap<String,
                 CopyOnWriteArrayList<String>> lists,
@@ -48,17 +48,15 @@ public class Persistence {
         // Write to a temp file first
         // Only rename to dump.rdb when fully written
         // This prevents a corrupt file if we crash mid-write
-        String tempFile = RDB_FILE + ".tmp";
+        Path temp = file.resolveSibling(
+            file.getFileName() + ".tmp");
 
         try (DataOutputStream out = new DataOutputStream(
                 new BufferedOutputStream(
-                    new FileOutputStream(tempFile)))) {
+                    new FileOutputStream(temp.toFile())))) {
 
             // Write magic header
             out.writeUTF(MAGIC);
-
-            // Current time — used to skip expired keys
-            long now = System.currentTimeMillis();
 
             // ── Write all string keys ──
             for (Map.Entry<String, String> entry
@@ -150,7 +148,7 @@ public class Persistence {
                 + data.size() + " strings, "
                 + lists.size() + " lists, "
                 + hashes.size() + " hashes to "
-                + RDB_FILE);
+                + file.getFileName());
 
         } catch (IOException e) {
             System.out.println("[RDB] Save failed: "
@@ -162,8 +160,8 @@ public class Persistence {
         // File.renameTo fails silently on Windows when the target
         // already exists, so use Files.move with REPLACE_EXISTING
         // (and an atomic move where the filesystem supports it).
-        Path source = Paths.get(tempFile);
-        Path target = Paths.get(RDB_FILE);
+        Path source = temp;
+        Path target = file;
         try {
             Files.move(source, target,
                 StandardCopyOption.REPLACE_EXISTING,
@@ -189,6 +187,8 @@ public class Persistence {
     // Called when server starts up
     // ─────────────────────────────────────────
     public static void load(
+            Path file,
+            long now,
             ConcurrentHashMap<String, String> data,
             ConcurrentHashMap<String,
                 CopyOnWriteArrayList<String>> lists,
@@ -196,7 +196,7 @@ public class Persistence {
                 ConcurrentHashMap<String, String>> hashes,
             ConcurrentHashMap<String, Long> expiry) {
 
-        File rdbFile = new File(RDB_FILE);
+        File rdbFile = file.toFile();
 
         // No file yet — first time running
         if (!rdbFile.exists()) {
@@ -217,7 +217,6 @@ public class Persistence {
                 return;
             }
 
-            long now = System.currentTimeMillis();
             int loaded = 0;
             int skipped = 0;
 
@@ -306,7 +305,7 @@ public class Persistence {
 
             System.out.println("[RDB] Loaded " + loaded
                 + " keys, skipped " + skipped
-                + " expired keys from " + RDB_FILE);
+                + " expired keys from " + file.getFileName());
 
         } catch (IOException e) {
             System.out.println(
