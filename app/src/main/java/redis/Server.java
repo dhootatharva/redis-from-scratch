@@ -3,6 +3,7 @@ package redis;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
@@ -11,33 +12,42 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 public class Server implements AutoCloseable {
 
     private static final int DEFAULT_PORT = 6379;
-    private static final int THREAD_POOL_SIZE = 100;
+    private static final int DEFAULT_MAX_CLIENTS = 100;
+
+    // How many finished handshakes the operating system may hold
+    // while the accept loop is busy
+    private static final int BACKLOG = 511;
 
     private final ServerSocket serverSocket;
     private final CommandHandler handler;
     private final ExecutorService threadPool;
+    private final int maxClients;
 
     // Every connected client, so close() can disconnect them
     private final Set<Socket> clients = ConcurrentHashMap.newKeySet();
     private volatile boolean closed = false;
 
+    // Usage: java -jar app.jar [port] [--verbose]
     public static void main(String[] args) throws IOException {
 
-        // Optional port argument: java -jar app.jar 6380
-        final int PORT = args.length > 0
-            ? Integer.parseInt(args[0])
-            : DEFAULT_PORT;
+        int port = DEFAULT_PORT;
+        for (String arg : args) {
+            if (arg.equals("--verbose")) {
+                Log.verbose = true;
+            } else {
+                port = Integer.parseInt(arg);
+            }
+        }
 
         Store store = new Store();
 
         // Bind the port first, then load the snapshot and start the
-        // background threads (same order as before the refactor)
-        Server server = new Server(PORT, store);
+        // background threads
+        Server server = new Server(port, store);
         try {
             store.load();
         } catch (CorruptSnapshotException e) {
@@ -51,40 +61,56 @@ public class Server implements AutoCloseable {
         }
         store.startBackgroundThreads();
 
-        System.out.println("Redis server started on port " + PORT);
-        System.out.println("Thread pool size: " + THREAD_POOL_SIZE);
+        Log.info("Redis server started on port " + server.port());
+        Log.info("Max clients: " + server.maxClients);
 
-        // Shutdown hook — runs when Ctrl+C is pressed
-        // Saves data to disk before the JVM exits
+        // Shutdown hook — runs when Ctrl+C is pressed.
+        // Order matters: stop taking commands, stop the background
+        // threads, and only then write the final snapshot, so it
+        // contains everything and nothing changes underneath it.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println("\nShutting down server...");
-
-            // Stop accepting new tasks
-            server.threadPool.shutdown();
-            try {
-                // Wait up to 5 seconds for running tasks to finish
-                server.threadPool.awaitTermination(5, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-
-            // Save everything to disk
+            Log.info("\nShutting down server...");
+            server.close();
+            store.close();
             store.save();
-
-            System.out.println("Server stopped cleanly.");
+            Log.info("Server stopped cleanly.");
         }));
 
         server.serve();
     }
 
+    public Server(int port, Store store) throws IOException {
+        this(port, store, DEFAULT_MAX_CLIENTS);
+    }
+
     // Bind the port and get ready to serve. Pass port 0 to let the
     // operating system pick a free port (used by tests).
-    public Server(int port, Store store) throws IOException {
-        this.serverSocket = new ServerSocket(port);
-        this.serverSocket.setReuseAddress(true);
+    public Server(int port, Store store, int maxClients)
+            throws IOException {
+
+        // Options that affect binding must be set BEFORE bind, so the
+        // socket is created unbound first.
+        this.serverSocket = new ServerSocket();
+
+        // After a server stops, its port stays reserved for a minute
+        // or so (TCP's TIME_WAIT state). SO_REUSEADDR lets a restarted
+        // server bind it straight away. On Windows the same option
+        // means something else — it would let a second process take a
+        // port that is in use — and Windows does not need it for a
+        // quick restart, so it is left off there.
+        if (!isWindows()) {
+            this.serverSocket.setReuseAddress(true);
+        }
+        this.serverSocket.bind(new InetSocketAddress(port), BACKLOG);
+
         this.handler = new CommandHandler(store);
-        this.threadPool =
-            Executors.newFixedThreadPool(THREAD_POOL_SIZE);
+        this.maxClients = maxClients;
+        this.threadPool = Executors.newFixedThreadPool(maxClients);
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "")
+            .toLowerCase().contains("win");
     }
 
     // The port actually bound — differs from the requested one
@@ -104,6 +130,15 @@ public class Server implements AutoCloseable {
                 if (closed) return;
                 throw e;
             }
+
+            // Every worker thread is tied to one client. With no
+            // worker free, a new client would wait in the pool's queue
+            // with no reply and no error. Tell it why, and hang up.
+            if (clients.size() >= maxClients) {
+                reject(clientSocket);
+                continue;
+            }
+
             clients.add(clientSocket);
             threadPool.submit(() -> {
                 handleClient(clientSocket);
@@ -111,7 +146,27 @@ public class Server implements AutoCloseable {
         }
     }
 
-    // Stop accepting, disconnect every client, stop the workers
+    private static void reject(Socket clientSocket) {
+        try {
+            OutputStream output = clientSocket.getOutputStream();
+            output.write(RespSerializer.error(
+                "max number of clients reached"));
+            output.flush();
+            clientSocket.shutdownOutput();
+        } catch (IOException e) {
+            // the client went away first
+        } finally {
+            try {
+                clientSocket.close();
+            } catch (IOException e) {
+                // already closed
+            }
+        }
+    }
+
+    // Stop accepting, disconnect every client, stop the workers.
+    // A worker blocked in a socket read cannot be interrupted; closing
+    // its socket is what wakes it up.
     @Override
     public void close() {
         closed = true;
@@ -162,11 +217,20 @@ public class Server implements AutoCloseable {
 
         String clientAddress =
             clientSocket.getInetAddress().getHostAddress();
-        System.out.println("[Thread "
-            + Thread.currentThread().getId()
-            + "] Client connected: " + clientAddress);
+        Log.debug(() -> "Client connected: " + clientAddress);
 
         try {
+            // Replies are small and the client is waiting for each
+            // one, so send them immediately instead of letting TCP
+            // hold them back to combine with later data (Nagle)
+            clientSocket.setTcpNoDelay(true);
+
+            // Ask the operating system to probe idle connections, so
+            // a client that vanished without closing (power cut,
+            // dropped network) is eventually noticed and its worker
+            // thread freed
+            clientSocket.setKeepAlive(true);
+
             RespParser parser = new RespParser(
                 clientSocket.getInputStream()
             );
@@ -179,9 +243,7 @@ public class Server implements AutoCloseable {
                 } catch (ProtocolException e) {
                     // Not valid RESP. We can no longer tell where the
                     // next command starts, so say why and hang up.
-                    System.out.println("[Thread "
-                        + Thread.currentThread().getId()
-                        + "] Protocol error from " + clientAddress
+                    Log.info("Protocol error from " + clientAddress
                         + ": " + e.getMessage());
                     replyAndHangUp(clientSocket, output,
                         RespSerializer.error(
@@ -190,16 +252,16 @@ public class Server implements AutoCloseable {
                 } catch (OutOfMemoryError e) {
                     // A value within the protocol limit but larger
                     // than this JVM's heap. Drop this client only.
+                    Log.info("Out of memory reading a command from "
+                        + clientAddress);
                     replyAndHangUp(clientSocket, output,
                         RespSerializer.error("out of memory"));
                     break;
                 }
 
                 if (command == null) {
-                    System.out.println("[Thread "
-                        + Thread.currentThread().getId()
-                        + "] Client disconnected: "
-                        + clientAddress);
+                    Log.debug(() ->
+                        "Client disconnected: " + clientAddress);
                     break;
                 }
 
@@ -209,9 +271,7 @@ public class Server implements AutoCloseable {
                     continue;
                 }
 
-                System.out.println("[Thread "
-                    + Thread.currentThread().getId()
-                    + "] Command: " + command);
+                Log.debug(() -> "Command: " + command);
 
                 byte[] response;
                 try {
@@ -220,7 +280,7 @@ public class Server implements AutoCloseable {
                     // A bug in a command must not silently drop the
                     // connection: the client gets an error reply and
                     // the stream stays in step
-                    System.out.println("Internal error: " + e);
+                    Log.info("Internal error: " + e);
                     response = RespSerializer.error("internal error");
                 }
                 output.write(response);
@@ -228,17 +288,14 @@ public class Server implements AutoCloseable {
             }
 
         } catch (IOException e) {
-            String message = String.valueOf(e.getMessage());
-            if (!message.contains("Connection reset")) {
-                System.out.println("Client error: " + message);
-            }
+            // A client that disappears is normal, not an error
+            Log.debug(() -> "Client " + clientAddress + ": " + e);
         } finally {
             clients.remove(clientSocket);
             try {
                 clientSocket.close();
             } catch (IOException e) {
-                System.out.println(
-                    "Error closing: " + e.getMessage());
+                // already closed
             }
         }
     }

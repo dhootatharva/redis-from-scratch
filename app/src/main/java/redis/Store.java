@@ -191,7 +191,7 @@ public class Store {
                 Persistence.save(snapshotFile, now, snapshot);
                 return true;
             } catch (IOException e) {
-                System.out.println("[RDB] Save failed: " + e);
+                Log.info("[RDB] Save failed: " + e);
                 return false;
             }
         }
@@ -253,7 +253,7 @@ public class Store {
         saveThread.setDaemon(true);
         saveThread.setName("background-save");
         saveThread.start();
-        System.out.println("Background save thread started" +
+        Log.info("Background save thread started" +
             " (saves every 60 seconds)");
     }
 
@@ -288,8 +288,7 @@ public class Store {
                 }
                 int deleted = removeExpiredKeys();
                 if (deleted > 0) {
-                    System.out.println(
-                        "[Expiry] Cleaned up "
+                    Log.debug(() -> "[Expiry] Cleaned up "
                         + deleted + " expired keys");
                 }
             }
@@ -298,7 +297,7 @@ public class Store {
         cleanupThread.setName("expiry-cleanup");
         cleanupThread.start();
         expiryThread = cleanupThread;
-        System.out.println("Active expiry thread started");
+        Log.info("Active expiry thread started");
     }
 
     // Test hooks: look at raw state without triggering lazy expiry

@@ -179,7 +179,7 @@ public class Persistence {
         }
         syncDirectory(file);
 
-        System.out.println("[RDB] Saved "
+        Log.info("[RDB] Saved "
             + strings + " strings, "
             + lists + " lists, "
             + hashes + " hashes to "
@@ -222,7 +222,7 @@ public class Persistence {
 
         // No file yet — first time running
         if (!Files.exists(file)) {
-            System.out.println(
+            Log.info(
                 "[RDB] No dump.rdb found — starting fresh");
             return loaded;
         }
@@ -308,7 +308,7 @@ public class Persistence {
                 "cannot be read: " + e.getMessage());
         }
 
-        System.out.println("[RDB] Loaded " + loaded.size()
+        Log.info("[RDB] Loaded " + loaded.size()
             + " keys, skipped " + skipped
             + " expired keys from " + file.getFileName());
         return loaded;
