@@ -1,12 +1,17 @@
 package redis;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.net.Socket;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -121,6 +126,57 @@ class ServerLifecycleTest {
         }
         try (RespClient client = new RespClient(port)) {
             assertEquals("+PONG\r\n", client.command("PING"));
+        }
+    }
+
+    // Clients keep connecting while the server is closed. The accept
+    // loop must end normally, not with an exception from handing a
+    // late client to a pool that has already stopped. Repeated,
+    // because it depends on timing.
+    @Test
+    void closingWhileClientsAreConnectingEndsTheAcceptLoopCleanly()
+            throws Exception {
+        for (int round = 0; round < 20; round++) {
+            Store store = new Store(
+                tempDir.resolve("dump.rdb"), System::currentTimeMillis);
+            Server busy = new Server(0, store, 50);
+            int port = busy.port();
+
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread acceptThread = new Thread(() -> {
+                try {
+                    busy.serve();
+                } catch (Throwable t) {
+                    failure.set(t);
+                }
+            });
+            acceptThread.start();
+
+            AtomicBoolean keepConnecting = new AtomicBoolean(true);
+            Thread[] connectors = new Thread[4];
+            for (int i = 0; i < connectors.length; i++) {
+                connectors[i] = new Thread(() -> {
+                    while (keepConnecting.get()) {
+                        try (Socket socket = new Socket("localhost", port)) {
+                            // connected; close again at once
+                        } catch (IOException e) {
+                            // the server is closing
+                        }
+                    }
+                });
+                connectors[i].start();
+            }
+
+            Thread.sleep(5);
+            busy.close();
+            keepConnecting.set(false);
+            for (Thread connector : connectors) connector.join();
+            acceptThread.join(5_000);
+
+            assertFalse(acceptThread.isAlive(),
+                "the accept loop did not end");
+            assertNull(failure.get(),
+                "the accept loop ended with " + failure.get());
         }
     }
 
