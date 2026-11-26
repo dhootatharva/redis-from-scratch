@@ -188,6 +188,25 @@ class RespTest {
             str(RespSerializer.error("unknown command 'FOO'")));
     }
 
+    // An error or simple string is one line. Text that came from the
+    // client can contain a line break, which would split the reply.
+    @Test
+    void lineBreaksInOneLineRepliesBecomeSpaces() {
+        assertEquals("-ERR unknown command 'a  +OK'\r\n",
+            str(RespSerializer.error("unknown command 'a\r\n+OK'")));
+        assertEquals("-ERR a b\r\n",
+            str(RespSerializer.error("a\nb")));
+        assertEquals("+a b\r\n",
+            str(RespSerializer.simpleString("a\rb")));
+    }
+
+    // A bulk string is protected by its length, so it keeps them
+    @Test
+    void lineBreaksInBulkStringsAreKept() {
+        assertEquals("$4\r\na\r\nb\r\n",
+            str(RespSerializer.bulkString("a\r\nb")));
+    }
+
     @Test
     void wrongTypeErrorKeepsItsOwnCode() {
         byte[] reply = RespSerializer.error(

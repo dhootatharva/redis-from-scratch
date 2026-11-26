@@ -86,6 +86,20 @@ class ServerIntegrationTest extends ServerTestBase {
         }
     }
 
+    // A command name is a bulk string, so it may contain a line break.
+    // The error that quotes it must still be exactly one reply, or
+    // every later reply on this connection is matched to the wrong
+    // command.
+    @Test
+    void aLineBreakInACommandNameDoesNotSplitTheErrorReply()
+            throws Exception {
+        try (RespClient client = connect()) {
+            assertEquals("-ERR unknown command 'FOO  +FAKE'\r\n",
+                client.command("FOO\r\n+FAKE"));
+            assertEquals("+PONG\r\n", client.command("PING"));
+        }
+    }
+
     @Test
     void unknownCommandIsAnErrorButTheConnectionStaysOpen()
             throws Exception {

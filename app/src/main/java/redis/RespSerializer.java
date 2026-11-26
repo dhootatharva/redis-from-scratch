@@ -9,7 +9,20 @@ public class RespSerializer {
     // Simple string response — +OK\r\n or +PONG\r\n
     // Used for success responses
     public static byte[] simpleString(String value) {
-        return Binary.encode("+" + value + "\r\n");
+        return Binary.encode("+" + oneLine(value) + "\r\n");
+    }
+
+    // A simple string or an error ends at the first line break, so the
+    // text itself must not contain one. Error text can include what
+    // the client sent (an unknown command's name, say), and a client
+    // may send any bytes. A line break in there would end the reply
+    // early and the client would read the rest as a second reply.
+    // Redis replaces line breaks with spaces; so does this.
+    private static String oneLine(String text) {
+        if (text.indexOf('\r') < 0 && text.indexOf('\n') < 0) {
+            return text;
+        }
+        return text.replace('\r', ' ').replace('\n', ' ');
     }
 
     // Error response — -ERR message\r\n
@@ -19,7 +32,7 @@ public class RespSerializer {
         String line = message.startsWith("WRONGTYPE ")
             ? message
             : "ERR " + message;
-        return Binary.encode("-" + line + "\r\n");
+        return Binary.encode("-" + oneLine(line) + "\r\n");
     }
 
     // Integer response — :42\r\n

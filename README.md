@@ -120,7 +120,7 @@ The container runs as a non-root user and keeps `dump.rdb` in the `/data` volume
 
 ## Tests
 
-`./gradlew test` runs 144 JUnit tests. None of them sleeps to wait for time to pass: expiry is driven by an injected clock.
+`./gradlew test` runs 147 JUnit tests. None of them sleeps to wait for time to pass: expiry is driven by an injected clock.
 
 | Test class | What it covers |
 |---|---|
