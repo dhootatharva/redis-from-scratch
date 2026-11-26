@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 public class Server implements AutoCloseable {
@@ -156,9 +157,37 @@ public class Server implements AutoCloseable {
             }
 
             clients.add(clientSocket);
-            threadPool.submit(() -> {
-                handleClient(clientSocket);
-            });
+
+            // close() may have run while this client was being
+            // accepted. It sets the flag before it walks the set, so
+            // one of two things is true: either close() saw this
+            // socket and closed it, or the flag is already set here.
+            // Checking after the add covers both.
+            if (closed) {
+                drop(clientSocket);
+                return;
+            }
+
+            try {
+                threadPool.submit(() -> {
+                    handleClient(clientSocket);
+                });
+            } catch (RejectedExecutionException e) {
+                // The pool was stopped between the check and the submit
+                drop(clientSocket);
+                if (closed) return;
+                throw e;
+            }
+        }
+    }
+
+    // Close a client that was accepted but will not be served
+    private void drop(Socket clientSocket) {
+        clients.remove(clientSocket);
+        try {
+            clientSocket.close();
+        } catch (IOException e) {
+            // already closed
         }
     }
 
