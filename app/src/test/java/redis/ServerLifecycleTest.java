@@ -105,17 +105,20 @@ class ServerLifecycleTest {
         }
     }
 
-    // A restarted server must be able to take its old port at once
+    // A restarted server must be able to take its old port at once.
+    // Repeated, because the failure this guards against is a race:
+    // close() returning before the accept loop has let go of the port.
     @Test
     void thePortCanBeReusedImmediatelyAfterClose() throws Exception {
         server = start(0, 10);
         int port = server.port();
-        try (RespClient client = new RespClient(port)) {
-            assertEquals("+PONG\r\n", client.command("PING"));
+        for (int restart = 0; restart < 25; restart++) {
+            try (RespClient client = new RespClient(port)) {
+                assertEquals("+PONG\r\n", client.command("PING"));
+            }
+            server.close();
+            server = start(port, 10);
         }
-        server.close();
-
-        server = start(port, 10);
         try (RespClient client = new RespClient(port)) {
             assertEquals("+PONG\r\n", client.command("PING"));
         }
