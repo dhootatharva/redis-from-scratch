@@ -10,8 +10,10 @@ import java.net.SocketException;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class Server implements AutoCloseable {
 
@@ -30,6 +32,11 @@ public class Server implements AutoCloseable {
     // Every connected client, so close() can disconnect them
     private final Set<Socket> clients = ConcurrentHashMap.newKeySet();
     private volatile boolean closed = false;
+
+    // The thread running serve(), and a latch it opens on the way out,
+    // so close() can wait until the accept loop has really stopped
+    private volatile Thread acceptThread;
+    private final CountDownLatch acceptLoopExited = new CountDownLatch(1);
 
     // Usage: java -jar app.jar [port] [--verbose]
     public static void main(String[] args) throws IOException {
@@ -121,6 +128,15 @@ public class Server implements AutoCloseable {
 
     // The accept loop. Blocks until close() is called.
     public void serve() throws IOException {
+        acceptThread = Thread.currentThread();
+        try {
+            acceptLoop();
+        } finally {
+            acceptLoopExited.countDown();
+        }
+    }
+
+    private void acceptLoop() throws IOException {
         while (true) {
             Socket clientSocket;
             try {
@@ -183,6 +199,24 @@ public class Server implements AutoCloseable {
             }
         }
         threadPool.shutdownNow();
+        awaitAcceptLoop();
+    }
+
+    // Closing a listening socket does not free its port at once if
+    // another thread is blocked in accept() on it: the operating
+    // system keeps the socket alive until that call returns. Java
+    // wakes the thread up but does not wait for it. So wait here, and
+    // the port is free by the time close() returns.
+    private void awaitAcceptLoop() {
+        Thread accepting = acceptThread;
+        if (accepting == null || accepting == Thread.currentThread()) {
+            return;
+        }
+        try {
+            acceptLoopExited.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     // Send a final reply and close the connection in a way that lets
